@@ -1,0 +1,6 @@
+torch
+transformers
+peft
+huggingface_hub
+datasets
+bert_score
