@@ -4,3 +4,7 @@ peft
 huggingface_hub
 datasets
 bert_score
+gradio
+mlx-lm[train]
+openai
+dotenv
