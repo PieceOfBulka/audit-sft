@@ -17,6 +17,9 @@ client = OpenAI(api_key=os.getenv('OPENAI_TOKEN'))
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_ADAPTER = os.path.join(_ROOT, "lora_peft", "lora-adapter")
 
+# Защитный потолок на суммарную длину ответа оцениваемой модели (догенерация до EOS).
+MAX_TOTAL_NEW_TOKENS = 8192
+
 DEFAULT_SYSTEM = (
     "Ты — эксперт по внутреннему аудиту и управлению рисками. "
     "Отвечай в профессиональном регистре, используя корректную "
@@ -80,7 +83,8 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_SYSTEM,
         help="Системный промпт (можно сменить в чате командой /system)",
     )
-    p.add_argument("--max-new-tokens", type=int, default=512)
+    p.add_argument("--max-new-tokens", type=int, default=1024,
+                   help="Размер чанка генерации; ответ догенерируется до конца (EOS), не обрезаясь")
     p.add_argument("--temperature", type=float, default=0.7)
     p.add_argument("--top-p", type=float, default=0.8)
     p.add_argument("--top-k", type=int, default=20)
@@ -158,7 +162,6 @@ def generate_reply(
     ).to(device)
 
     gen_kwargs: dict = {
-        "max_new_tokens": max_new_tokens,
         "pad_token_id": tokenizer.pad_token_id,
         "eos_token_id": tokenizer.eos_token_id,
     }
@@ -172,8 +175,21 @@ def generate_reply(
             top_k=top_k,
         )
 
-    output_ids = model.generate(**inputs, **gen_kwargs)
-    new_ids = output_ids[0][inputs["input_ids"].shape[1]:]
+    # Полный ответ без обрезки: чанки по max_new_tokens до EOS либо до защитного потолка.
+    seq = inputs["input_ids"]
+    attn = inputs["attention_mask"]
+    new_ids: list[int] = []
+    while len(new_ids) < MAX_TOTAL_NEW_TOKENS:
+        budget = min(max_new_tokens, MAX_TOTAL_NEW_TOKENS - len(new_ids))
+        out = model.generate(
+            input_ids=seq, attention_mask=attn, max_new_tokens=budget, **gen_kwargs
+        )
+        gen = out[0][seq.shape[1]:]
+        new_ids.extend(gen.tolist())
+        if gen.numel() == 0 or gen[-1].item() == tokenizer.eos_token_id or gen.numel() < budget:
+            break
+        seq = out
+        attn = torch.ones_like(seq)
     return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
 
 
@@ -255,9 +271,9 @@ def main():
         result_file += '.txt'
         with open(result_file, 'a', encoding='utf-8') as f:
             f.write('\n==============')
-            f.write(f'==Question\n{question}')
-            f.write(f'==Reply\n{reply}')
-            f.write(f'==Judgement\n')
+            f.write(f'\n\n==Question\n{question}')
+            f.write(f'\n\n==Reply\n{reply}')
+            f.write(f'\n\n==Judgement\n')
             f.write(f'- faithfulness = {faithfulness}\n')
             f.write(f'- completeness = {completeness}\n')
             f.write(f'- Reasoning\n{reasoning}\n')

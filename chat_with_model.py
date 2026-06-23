@@ -33,6 +33,10 @@ DEFAULT_SYSTEM = (
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_ADAPTER = os.path.join(_ROOT, "lora_peft", "lora-adapter")
 
+# Защитный потолок на суммарную длину ответа (чтобы догенерация не зациклилась).
+# Ответ растёт чанками по max_new_tokens до естественной остановки на EOS либо до этого предела.
+MAX_TOTAL_NEW_TOKENS = 8192
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Консольный чат с Qwen")
@@ -51,7 +55,8 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_SYSTEM,
         help="Системный промпт (можно сменить в чате командой /system)",
     )
-    p.add_argument("--max-new-tokens", type=int, default=512)
+    p.add_argument("--max-new-tokens", type=int, default=1024,
+                   help="Размер чанка генерации; ответ догенерируется до конца (EOS), не обрезаясь")
     p.add_argument("--temperature", type=float, default=0.7)
     p.add_argument("--top-p", type=float, default=0.8)
     p.add_argument("--top-k", type=int, default=20)
@@ -118,7 +123,6 @@ def generate_reply(
     ).to(device)
 
     gen_kwargs: dict = {
-        "max_new_tokens": max_new_tokens,
         "pad_token_id": tokenizer.pad_token_id,
         "eos_token_id": tokenizer.eos_token_id,
     }
@@ -132,8 +136,24 @@ def generate_reply(
             top_k=top_k,
         )
 
-    output_ids = model.generate(**inputs, **gen_kwargs)
-    new_ids = output_ids[0][inputs["input_ids"].shape[1] :]
+    # Полный ответ без обрезки: генерируем чанками по max_new_tokens до тех пор,
+    # пока модель не остановится сама (EOS), либо до защитного потолка.
+    seq = inputs["input_ids"]
+    attn = inputs["attention_mask"]
+    new_ids: list[int] = []
+    while len(new_ids) < MAX_TOTAL_NEW_TOKENS:
+        budget = min(max_new_tokens, MAX_TOTAL_NEW_TOKENS - len(new_ids))
+        out = model.generate(
+            input_ids=seq, attention_mask=attn, max_new_tokens=budget, **gen_kwargs
+        )
+        gen = out[0][seq.shape[1] :]
+        new_ids.extend(gen.tolist())
+        # остановка: пусто, дошли до EOS, или модель выдала меньше бюджета (значит закончила)
+        if gen.numel() == 0 or gen[-1].item() == tokenizer.eos_token_id or gen.numel() < budget:
+            break
+        # иначе упёрлись в бюджет — продолжаем с уже сгенерированного
+        seq = out
+        attn = torch.ones_like(seq)
     return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
 
 

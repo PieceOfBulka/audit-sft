@@ -12,6 +12,7 @@ PeftModel.disable_adapter() — поэтому не держим в памяти
 Откроется локальный веб-интерфейс (адрес напечатается в консоли, обычно
 http://127.0.0.1:7860).
 """
+import contextlib
 import os
 import sys
 import threading
@@ -26,6 +27,9 @@ from peft import PeftModel
 from sft_lora_peft import MODEL_DIR, pick_device, torch_dtype
 
 ADAPTER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lora-adapter")
+
+# Защитный потолок на суммарную длину ответа (догенерация чанками до EOS не зациклится).
+SAFETY_MAX_NEW_TOKENS = 4096
 
 SYSTEM = ("Ты — эксперт по внутреннему аудиту и управлению рисками. "
           "Отвечай в профессиональном регистре, используя корректную "
@@ -56,30 +60,54 @@ def _build_inputs(question: str):
 
 
 def _stream_one(question: str, use_adapter: bool, max_new_tokens: int):
-    """Генерирует ответ одной из версий модели, отдавая текст по мере генерации."""
+    """Стримит ПОЛНЫЙ ответ одной из версий модели: генерирует чанками по
+    max_new_tokens до естественной остановки (EOS) либо до защитного потолка —
+    ответ не обрезается."""
     inputs = _build_inputs(question)
-    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-    gen_kwargs = dict(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        do_sample=False,            # greedy -> воспроизводимое сравнение
-        pad_token_id=tokenizer.pad_token_id,
-        streamer=streamer,
-    )
-
-    def run():
-        with torch.no_grad():
-            if use_adapter:
-                model.generate(**gen_kwargs)
-            else:
-                with model.disable_adapter():   # выключаем LoRA -> чистая базовая модель
-                    model.generate(**gen_kwargs)
-
-    threading.Thread(target=run, daemon=True).start()
+    seq = inputs["input_ids"]
+    attn = inputs["attention_mask"]
     acc = ""
-    for chunk in streamer:
-        acc += chunk
-        yield acc
+    total = 0
+
+    while total < SAFETY_MAX_NEW_TOKENS:
+        budget = min(max_new_tokens, SAFETY_MAX_NEW_TOKENS - total)
+        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+        holder: dict = {}
+        cur_seq, cur_attn = seq, attn
+
+        def run():
+            with torch.no_grad():
+                # выключаем LoRA для базовой колонки; для адаптера — без изменений
+                ctx = contextlib.nullcontext() if use_adapter else model.disable_adapter()
+                with ctx:
+                    holder["out"] = model.generate(
+                        input_ids=cur_seq,
+                        attention_mask=cur_attn,
+                        max_new_tokens=budget,
+                        do_sample=False,            # greedy -> воспроизводимое сравнение
+                        pad_token_id=tokenizer.pad_token_id,
+                        eos_token_id=tokenizer.eos_token_id,
+                        streamer=streamer,
+                    )
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        for chunk in streamer:
+            acc += chunk
+            yield acc
+        t.join()
+
+        out = holder.get("out")
+        if out is None:
+            break
+        gen = out[0][cur_seq.shape[1]:]
+        total += int(gen.numel())
+        # закончили: пусто, EOS, или выдано меньше бюджета -> модель остановилась сама
+        if gen.numel() == 0 or gen[-1].item() == tokenizer.eos_token_id or gen.numel() < budget:
+            break
+        # упёрлись в бюджет — продолжаем с уже сгенерированного
+        seq = out
+        attn = torch.ones_like(seq)
 
 
 def respond(message, hist_base, hist_adapter, max_new_tokens):
@@ -117,7 +145,8 @@ with gr.Blocks(title="Сравнение моделей: base vs LoRA") as demo:
         cb_adapter = gr.Chatbot(label="➡️ С LoRA-адаптером", height=480)
     msg = gr.Textbox(placeholder="Введите вопрос по внутреннему аудиту…", label="Вопрос", lines=2)
     with gr.Row():
-        max_tok = gr.Slider(64, 768, value=400, step=32, label="Макс. токенов в ответе")
+        max_tok = gr.Slider(128, 2048, value=1024, step=64,
+                            label="Размер чанка генерации (ответ догенерируется до конца)")
         send = gr.Button("Отправить", variant="primary")
         clear = gr.Button("Очистить")
 
