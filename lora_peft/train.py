@@ -118,6 +118,7 @@ training_args = TrainingArguments(
     gradient_accumulation_steps=2,
     learning_rate=1e-4,
     warmup_ratio=0.03,
+    group_by_length=True,
     bf16=(device == "cuda"),
     fp16=(device == "mps"),  # модель на mps загружена в float16 (sft_lora_peft.py) — автокаст должен совпадать
     logging_steps=10,
