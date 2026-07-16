@@ -125,7 +125,7 @@ training_args = TrainingArguments(
     save_strategy="epoch",
     load_best_model_at_end=False,
     optim="paged_adamw_8bit" if device == "cuda" else "adamw_torch",
-    report_to="none",
+    report_to="tensorboard",
     dataloader_pin_memory=(device == "cuda"),
 )
 
