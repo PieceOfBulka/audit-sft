@@ -14,7 +14,7 @@ def pick_device():
 device=pick_device()
 # Корень репозитория = родитель каталога lora_peft. Путь к весам не зависит от cwd.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_DIR = os.path.join(_ROOT, "weights", "weights_qwen")
+MODEL_DIR = os.path.join(_ROOT, "weights", "Qwen", "Qwen3-4B-Instruct-2507")
 
 if device == "cuda":
     torch_dtype = torch.bfloat16  # Идеально для современных GPU
