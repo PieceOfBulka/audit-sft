@@ -113,10 +113,11 @@ collator = DataCollatorForSeq2Seq(
 training_args = TrainingArguments(
     output_dir="./lora",
     num_train_epochs=2,
-    per_device_train_batch_size=1,
-    per_device_eval_batch_size=1,
-    gradient_accumulation_steps=8,
+    per_device_train_batch_size=4,
+    per_device_eval_batch_size=4,
+    gradient_accumulation_steps=2,
     learning_rate=1e-4,
+    warmup_ratio=0.03,
     bf16=(device == "cuda"),
     fp16=(device == "mps"),  # модель на mps загружена в float16 (sft_lora_peft.py) — автокаст должен совпадать
     logging_steps=10,
