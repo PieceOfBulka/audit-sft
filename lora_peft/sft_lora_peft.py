@@ -31,7 +31,7 @@ def get_model_with_lora(rank: int = 16, alpha: int = 32, lora_dropout: float = 0
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_DIR, 
             dtype=torch_dtype, 
-            device_map='auto'  # 'auto' работает надежнее и лучше распределяет слои, чем жесткое 'cuda' (автоматически low_cpu_mem_usage=True)
+            device_map='auto',  # 'auto' работает надежнее и лучше распределяет слои, чем жесткое 'cuda' (автоматически low_cpu_mem_usage=True)
             attn_implementation='sdpa'
         )
     elif device == 'mps':
