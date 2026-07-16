@@ -81,7 +81,7 @@ def tokenize(example):
                                     f"- Направление: {example['domain_a']}\n"
                                     f"- Задача: {example['domain_b']}\n"
                                     f"- Стадия процесса: {example['domain_c']}\n"
-                                    f"\nВопрос{example["question"]}"}
+                                    f"\nВопрос: {example['question']}"}
     ]
     full_msgs = prompt_msgs + [{"role": "assistant", "content": example["answer"]}]
 
@@ -117,8 +117,8 @@ training_args = TrainingArguments(
     per_device_eval_batch_size=1,
     gradient_accumulation_steps=8,
     learning_rate=1e-4,
-    bf16=(device in ['cuda','mps']),
-    fp16=False,
+    bf16=(device == "cuda"),
+    fp16=(device == "mps"),  # модель на mps загружена в float16 (sft_lora_peft.py) — автокаст должен совпадать
     logging_steps=10,
     eval_strategy="steps",
     eval_steps=50,
@@ -126,7 +126,7 @@ training_args = TrainingArguments(
     load_best_model_at_end=False,
     optim="paged_adamw_8bit" if device == "cuda" else "adamw_torch",
     report_to="none",
-    dataloader_pin_memory=False,
+    dataloader_pin_memory=(device == "cuda"),
 )
 
 model = get_model_with_lora(
