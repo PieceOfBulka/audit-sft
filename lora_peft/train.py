@@ -148,6 +148,7 @@ training_args = TrainingArguments(
     warmup_ratio=0.03,
     bf16=(device == "cuda"),
     fp16=(device == "mps"),
+    group_by_length=True,
     logging_steps=10,
     eval_strategy="steps",
     eval_steps=50,
