@@ -9,11 +9,14 @@ import torch
 from transformers import (AutoTokenizer, DataCollatorForSeq2Seq, Trainer,
                           TrainerCallback, TrainingArguments)
 
+from unsloth import FastLanguageModel
+
 from load_dataset import load_train_eval_dataset
 from sft_lora_peft import MODEL_DIR, get_model_with_lora, pick_device
 
 device = pick_device()
 
+MAX_LEN = 768
 
 class TimingCallback(TrainerCallback):
     """Замер времени: общее, на эпоху и на шаг (optimizer step)."""
@@ -62,7 +65,27 @@ class TimingCallback(TrainerCallback):
 # --- данные: data/claude_answers.json -> сплиты train/test ---
 raw = load_train_eval_dataset()
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name=str(MODEL_DIR),
+    max_seq_length=MAX_LEN,
+    dtype=torch.bfloat16,
+    load_in_4bit=False,
+    full_finetuning=False
+)
+
+model = FastLanguageModel.get_peft_model(
+    model,
+    r=16,
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                    "gate_proj", "up_proj", "down_proj"],
+    lora_alpha=32,
+    lora_dropout=0.05,
+    bias="none",
+    use_gradient_checkpointing="unsloth",
+    random_state=42,
+)
+
+
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
@@ -70,8 +93,6 @@ SYSTEM = ("Ты — эксперт по внутреннему аудиту и �
           "Отвечай в профессиональном регистре, используя корректную "
           "терминологию, структурируя рассуждение в логике системы "
           "управления рисками. Отвечай на русском.")
-
-MAX_LEN = 768
 
 
 def tokenize(example):
@@ -124,7 +145,8 @@ training_args = TrainingArguments(
     eval_steps=50,
     save_strategy="epoch",
     load_best_model_at_end=False,
-    optim="paged_adamw_8bit" if device == "cuda" else "adamw_torch",
+    # optim="paged_adamw_8bit" if device == "cuda" else "adamw_torch",
+    optim="adamw_8bit"
     report_to="tensorboard",
     dataloader_pin_memory=(device == "cuda"),
 )
