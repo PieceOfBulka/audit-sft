@@ -75,29 +75,28 @@ MAX_LEN = 768
 
 
 def tokenize(example):
-    prompt_msgs = [
+    full_msgs = [
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": "Область аудита:\n"
                                     f"- Направление: {example['domain_a']}\n"
                                     f"- Задача: {example['domain_b']}\n"
                                     f"- Стадия процесса: {example['domain_c']}\n"
-                                    f"\nВопрос: {example['question']}"}
+                                    f"\nВопрос: {example['question']}"},
+        {"role": "assistant", "content": example["answer"]}
     ]
-    full_msgs = prompt_msgs + [{"role": "assistant", "content": example["answer"]}]
 
-    prompt_text = tokenizer.apply_chat_template(
-        prompt_msgs, tokenize=False, add_generation_prompt=True
+    encoded = tokenizer.apply_chat_template(
+        full_msgs,
+        tokenize=True,
+        add_generation_prompt=False,
+        return_dict=True,
+        return_assistant_tokens_mask=True,
     )
-    full_text = tokenizer.apply_chat_template(
-        full_msgs, tokenize=False, add_generation_prompt=False
-    )
-    prompt_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
-    full_ids = tokenizer(full_text, add_special_tokens=False)["input_ids"][:MAX_LEN]
 
-    labels = full_ids.copy()
-    # маскируем всё, что относится к промпту -> лосс только по ответу
-    for i in range(min(len(prompt_ids), len(labels))):
-        labels[i] = -100
+    full_ids = encoded["input_ids"][:MAX_LEN]
+    assistant_mask = encoded["assistant_masks"][:MAX_LEN]
+
+    labels = [tok if m else -100 for tok, m in zip(full_ids, assistant_mask)]
 
     return {"input_ids": full_ids,
             "attention_mask": [1] * len(full_ids),
@@ -119,7 +118,7 @@ training_args = TrainingArguments(
     learning_rate=1e-4,
     warmup_ratio=0.03,
     bf16=(device == "cuda"),
-    fp16=(device == "mps"),  # модель на mps загружена в float16 (sft_lora_peft.py) — автокаст должен совпадать
+    fp16=(device == "mps"),
     logging_steps=10,
     eval_strategy="steps",
     eval_steps=50,
