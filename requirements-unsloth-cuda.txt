@@ -2,39 +2,48 @@
 # Установка одной командой:
 #   pip install -r requirements-unsloth-cuda.txt
 #
-# Назначение: Unsloth LoRA-обучение Qwen3-4B на NVIDIA (A100), Python 3.10,
+# Назначение: Unsloth LoRA-обучение Qwen3-4B на NVIDIA (A100=Ampere), Python 3.10,
 # драйвер CUDA <= 12.8 (узлы t2ru-iagcbe-d0x).
 #
-# ВАЖНО: первичный индекс — cu128. Это заставляет torch/xformers/torchao/triton
-# ставиться в сборке под CUDA 12.8. НЕ cu130 — иначе падает "driver too old".
-# Всё остальное (чистый python) резолвится из PyPI (extra-index-url).
+# Версии ниже сверены с реальными requires_dist пакетов unsloth==2026.7.4 и
+# unsloth_zoo==2026.7.4 с PyPI (не подобраны на глаз):
+#   curl -s https://pypi.org/pypi/unsloth/2026.7.4/json | python3 -c "..."
+#
+# ВАЖНО: первичный индекс — cu128. torch/torchvision/torchaudio ставятся в
+# сборке под CUDA 12.8. НЕ cu130 — иначе падает "driver too old" на этом драйвере.
 
 --index-url https://download.pytorch.org/whl/cu128
 --extra-index-url https://pypi.org/simple
 
-# --- CUDA-ядро: собрано под CUDA 12.8, версии согласованы между собой ---
+# --- CUDA-ядро: собрано под CUDA 12.8 ---
+# unsloth core требует torch>=2.4.0,<2.11.0 — 2.8.0 попадает в диапазон
 torch==2.8.0+cu128
 torchvision==0.23.0+cu128
 torchaudio==2.8.0+cu128
 
-# --- Unsloth: версии, где fast-path для Qwen3 работает ---
-unsloth==2026.7.4
+# --- Unsloth: extras "cu128-ampere-torch280" — официальная сборка под
+# нашу связку (A100/Ampere + torch 2.8.0 + CUDA 12.8). Сам подтягивает
+# верную версию xformers/bitsandbytes для этой комбинации, не гадаем руками. ---
+unsloth[cu128-ampere-torch280]==2026.7.4
 unsloth-zoo==2026.7.4
-transformers==4.56.2          # 4.x обязателен: ветка 5.x ломает патч apply_qkv у Qwen3
 
-# --- ускорение внимания / квантизация (должны матчить torch 2.8.0) ---
-xformers==0.0.32.post2
+# transformers: разрешённый диапазон unsloth — >=4.51.3,<=5.5.0, минус набор
+# конкретно исключённых версий (среди них вся ветка 5.x, ломающая Qwen3-fastpath
+# через apply_qkv). 4.56.2 не входит в исключения.
+transformers==4.56.2
+
+# --- зависимости с открытыми диапазонами unsloth (пин не нужен — вместе с
+# unsloth[extra] выше резолвер сам подберёт совместимые версии) ---
 torchao>=0.13.0
-triton>=3.2.0
+triton>=3.0.0
+peft!=0.11.0,>=0.18.0
+trl!=0.19.0,<=0.24.0,>=0.18.2
+accelerate>=0.34.1
+datasets!=4.0.*,!=4.1.0,<4.4.0,>=3.4.1
+bitsandbytes!=0.46.0,!=0.48.0,>=0.45.5
+huggingface_hub>=0.34.0
 
-# --- обучение ---
-peft>=0.14,<0.18
-trl>=0.12,<0.20
-accelerate>=1.0
-datasets
-bitsandbytes
-
-# --- транзитивные зависимости Unsloth / unsloth-zoo ---
+# --- прочие зависимости unsloth/unsloth_zoo (open-range, не пинуем) ---
 diffusers
 hf_transfer
 nest-asyncio
@@ -46,5 +55,4 @@ cut_cross_entropy
 wheel>=0.42.0
 
 # --- утилиты проекта ---
-huggingface_hub
 python-dotenv
