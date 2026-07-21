@@ -151,13 +151,13 @@ training_args = TrainingArguments(
     dataloader_pin_memory=(device == "cuda"),
 )
 
-model = get_model_with_lora(
-    rank=16,
-    alpha=32,
-    lora_dropout=0.05,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                    "gate_proj", "up_proj", "down_proj"],
-)
+# model = get_model_with_lora(
+#     rank=16,
+#     alpha=32,
+#     lora_dropout=0.05,
+#     target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+#                     "gate_proj", "up_proj", "down_proj"],
+# )
 
 trainer = Trainer(
     model=model,
