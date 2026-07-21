@@ -1,0 +1,50 @@
+# requirements-unsloth-cuda.txt
+# Установка одной командой:
+#   pip install -r requirements-unsloth-cuda.txt
+#
+# Назначение: Unsloth LoRA-обучение Qwen3-4B на NVIDIA (A100), Python 3.10,
+# драйвер CUDA <= 12.8 (узлы t2ru-iagcbe-d0x).
+#
+# ВАЖНО: первичный индекс — cu128. Это заставляет torch/xformers/torchao/triton
+# ставиться в сборке под CUDA 12.8. НЕ cu130 — иначе падает "driver too old".
+# Всё остальное (чистый python) резолвится из PyPI (extra-index-url).
+
+--index-url https://download.pytorch.org/whl/cu128
+--extra-index-url https://pypi.org/simple
+
+# --- CUDA-ядро: собрано под CUDA 12.8, версии согласованы между собой ---
+torch==2.8.0+cu128
+torchvision==0.23.0+cu128
+torchaudio==2.8.0+cu128
+
+# --- Unsloth: версии, где fast-path для Qwen3 работает ---
+unsloth==2026.7.4
+unsloth-zoo==2026.7.4
+transformers==4.56.2          # 4.x обязателен: ветка 5.x ломает патч apply_qkv у Qwen3
+
+# --- ускорение внимания / квантизация (должны матчить torch 2.8.0) ---
+xformers==0.0.32.post2
+torchao>=0.13.0
+triton>=3.2.0
+
+# --- обучение ---
+peft>=0.14,<0.18
+trl>=0.12,<0.20
+accelerate>=1.0
+datasets
+bitsandbytes
+
+# --- транзитивные зависимости Unsloth / unsloth-zoo ---
+diffusers
+hf_transfer
+nest-asyncio
+pydantic
+sentencepiece>=0.2.0
+tyro
+msgspec
+cut_cross_entropy
+wheel>=0.42.0
+
+# --- утилиты проекта ---
+huggingface_hub
+python-dotenv
