@@ -1,6 +1,8 @@
 import os
 import sys
 
+from unsloth import FastLanguageModel
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import time
@@ -8,8 +10,6 @@ import time
 import torch
 from transformers import (AutoTokenizer, DataCollatorForSeq2Seq, Trainer,
                           TrainerCallback, TrainingArguments)
-
-from unsloth import FastLanguageModel
 
 from load_dataset import load_train_eval_dataset
 from sft_lora_peft import MODEL_DIR, get_model_with_lora, pick_device
@@ -146,7 +146,7 @@ training_args = TrainingArguments(
     save_strategy="epoch",
     load_best_model_at_end=False,
     # optim="paged_adamw_8bit" if device == "cuda" else "adamw_torch",
-    optim="adamw_8bit"
+    optim="adamw_8bit",
     report_to="tensorboard",
     dataloader_pin_memory=(device == "cuda"),
 )
