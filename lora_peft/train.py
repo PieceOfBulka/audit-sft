@@ -149,6 +149,7 @@ training_args = TrainingArguments(
     bf16=(device == "cuda"),
     fp16=(device == "mps"),
     group_by_length=True,
+    use_liger_kernel=True,
     logging_steps=10,
     eval_strategy="steps",
     eval_steps=50,
