@@ -141,10 +141,10 @@ collator = DataCollatorForSeq2Seq(
 training_args = TrainingArguments(
     output_dir="./lora",
     num_train_epochs=2,
-    per_device_train_batch_size=8,
-    per_device_eval_batch_size=8,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,
     gradient_accumulation_steps=2,
-    learning_rate=2e-4,
+    learning_rate=4e-4,
     warmup_ratio=0.03,
     bf16=(device == "cuda"),
     fp16=(device == "mps"),
