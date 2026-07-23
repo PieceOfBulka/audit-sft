@@ -129,7 +129,8 @@ trainer = Trainer(
     callbacks=[TimingCallback()],
 )
 
-print('==Старт обучения...')
+print(f'==Старт обучения модели {model.config._name_or_path}...')
+print(model.config)
 trainer.train()
 print('==Конец обучения, сохранение адаптера...')
 
