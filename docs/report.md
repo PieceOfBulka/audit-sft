@@ -131,24 +131,24 @@ LoRA: обучали 33 млн (0.81%)
 GPU	| Память|Время (LoRA, 2 эпохи)	|Комментарий
 |---|---|---|---|
 Apple Silicon M5 (MacBook, MPS)	|24 GB 	|6.5 ч	|Средний шаг ~61.65 с — на порядок медленнее CUDA; eval особенно тяжёлый (eval_runtime 470–780 с против ~33 с на A100)
-Nvidia A100-SXM4-80GB (1 карта)	|85 GB	|21 мин	|~18× быстрее Mac на этой задаче
-Nvidia A100 (8 карт, device_map='auto')	|85 GB/карта	|26 мин	|На ~19% медленнее одной карты из-за оверхеда межкарточной синхронизации при шардинге 4B модели
-Nvidia A100 (1 карта, batch_size=4, grad_accum=2)	|85 GB	|9.3 мин	|В предыдущих экспериментах batch=1, grad_accum=8, что не до конца загружало ресурсы карты, то есть где-то половина ресурсов простаивала. Сейчас она была забита под завязку
-Nvidia A100 (1 карта, batch_size=4, grad_accum=2, sdpa)	|85 GB	|9.4 мин	|
+Nvidia A100-SXM4-80GB (1 карта)	|80GB	|21 мин	|~18× быстрее Mac на этой задаче
+Nvidia A100 (8 карт, device_map='auto')	|80GB/карта	|26 мин	|На ~19% медленнее одной карты из-за оверхеда межкарточной синхронизации при шардинге 4B модели
+Nvidia A100 (1 карта, batch_size=4, grad_accum=2)	|80GB	|9.3 мин	|В предыдущих экспериментах batch=1, grad_accum=8, что не до конца загружало ресурсы карты, то есть где-то половина ресурсов простаивала. Сейчас она была забита под завязку
+Nvidia A100 (1 карта, batch_size=4, grad_accum=2, sdpa)	|80GB	|9.4 мин	|
 ||**Эксперименты с Unsloth**|
 |**_далее все эксперименты с dropout=0.05 (блокировал оптимизации по времени)_**|
-Nvidia A100 (1 карта, Unsloth, batch_size=4, grad_accum=2,)	|85 GB	|7 мин	| Большие трудности с установкой библиотеки - много конфликтов с transformers, datasets
-Nvidia A100 (1 карта, Unsloth, batch_size=4, grad_accum=2, group by length)	|85 GB	|6.2 мин	| Группировка примеров по длине внутри одного батча дало буст - мы меньше тратим времени на обработку ненужных паддингов у коротких текстов, которые попали с длинными в батч
-Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=4, grad_accum=2, group by length)	|85 GB	|6.9 мин	| 
-Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=8, grad_accum=2, group by length)	|85 GB	|5.2 мин	| Увеличение батча дало прирост в скорости + надо увеличивать lr (1e-4 -> 2e-4) так как обновления текут более гладко
-Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=16, grad_accum=2, group by length)	|85 GB	|4.6 мин	|
-Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=32, grad_accum=2, group by length)	|85 GB	|4.3 мин	|
-Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=64, grad_accum=2, group by length)	|85 GB	|4.4 мин	| Train loss уже не так сильно падает - с 1.8 до 1.15
-Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=128, grad_accum=2, group by length)	|85 GB	|4.7 мин	|
+Nvidia A100 (1 карта, Unsloth, batch_size=4, grad_accum=2,)	|80GB	|7 мин	| Большие трудности с установкой библиотеки - много конфликтов с transformers, datasets
+Nvidia A100 (1 карта, Unsloth, batch_size=4, grad_accum=2, group by length)	|80GB	|6.2 мин	| Группировка примеров по длине внутри одного батча дало буст - мы меньше тратим времени на обработку ненужных паддингов у коротких текстов, которые попали с длинными в батч
+Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=4, grad_accum=2, group by length)	|80GB	|6.9 мин	| 
+Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=8, grad_accum=2, group by length)	|80GB	|5.2 мин	| Увеличение батча дало прирост в скорости + надо увеличивать lr (1e-4 -> 2e-4) так как обновления текут более гладко
+Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=16, grad_accum=2, group by length)	|80GB	|4.6 мин	|
+Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=32, grad_accum=2, group by length)	|80GB	|4.3 мин	|
+Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=64, grad_accum=2, group by length)	|80GB	|4.4 мин	| Train loss уже не так сильно падает - с 1.8 до 1.15
+Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=128, grad_accum=2, group by length)	|80GB	|4.7 мин	|
 |dropout=0|
-Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=4, grad_accum=2, group by length)	|85 GB	|6.1 мин	| Был убран dropout, который блокировал временные ускорения и оставлял только оптимизации по памяти
-Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=32, grad_accum=2, group by length)	|85 GB	|3.6 мин	| 
-Nvidia A100 (1 карта, Unsloth, batch_size=32, grad_accum=2, group by length)	|85 GB	|3.2 мин	| ТОП результат
+Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=4, grad_accum=2, group by length)	|80GB	|6.1 мин	| Был убран dropout, который блокировал временные ускорения и оставлял только оптимизации по памяти
+Nvidia A100 (1 карта, Unsloth, Liger kernel, batch_size=32, grad_accum=2, group by length)	|80GB	|3.6 мин	| 
+Nvidia A100 (1 карта, Unsloth, batch_size=32, grad_accum=2, group by length)	|80GB	|3.2 мин	| ТОП результат
 
 #### Почему с увеличением batch size время обучения перестало падать?
 Этот парадокс — GPU Saturation Bottleneck (эффект перенасыщения GPU).
@@ -183,6 +183,6 @@ Master-копия весов (fp32)|	4|	16 GB
 Состояния Adam — m и v (fp32)|	8|	32 GB
 Итого без активаций	|16	|~64 GB
 | + активации (зависит от batch/seq)|	—	|~5–20 GB
-ВСЕГО	| |	~70–85 GB
+ВСЕГО	| |	~70–80GB
 
 Для нашего датасета full FT не нужен и вреден — 4B параметров на 1.2 млн токенов почти гарантированно переобучатся.
