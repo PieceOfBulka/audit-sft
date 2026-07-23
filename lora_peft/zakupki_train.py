@@ -23,9 +23,8 @@ args = p.parse_args()
 device = pick_device()
 
 # Корень репозитория = родитель каталога lora_peft. Путь к весам не зависит от cwd.
-ROOT = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(ROOT)
-MODEL_DIR = os.path.join(_ROOT, "weights", args.model)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODEL_DIR = os.path.join(ROOT, "weights", args.model)
 
 MAX_LEN=768
 
