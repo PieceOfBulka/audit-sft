@@ -41,6 +41,11 @@ MAX_TOTAL_NEW_TOKENS = 8192
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Консольный чат с Qwen")
     p.add_argument(
+        "--model",
+        default=MODEL_DIR,
+        help="Путь до базовой модели",
+    )
+    p.add_argument(
         "--lora",
         action="store_true",
         help="Загрузить LoRA-адаптер поверх базовой модели",
@@ -68,16 +73,16 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def load_model(use_lora: bool, adapter_path: str, device: str):
+def load_model(model: str, use_lora: bool, adapter_path: str, device: str):
     print("Загрузка токенизатора...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
+    tokenizer = AutoTokenizer.from_pretrained(model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
     print("Загрузка базовой модели (это может занять минуту)...")
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_DIR,
+        model,
         dtype=torch_dtype,
         low_cpu_mem_usage=True,
     )
@@ -169,7 +174,7 @@ def main() -> None:
     device = pick_device()
     print(f"Устройство: {device}")
 
-    model, tokenizer = load_model(args.lora, args.adapter, device)
+    model, tokenizer = load_model(args.model, args.lora, args.adapter, device)
 
     system_prompt = args.system
     history: list[dict[str, str]] = []
