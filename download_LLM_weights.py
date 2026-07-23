@@ -1,7 +1,7 @@
 """Download model weights into /weights"""
 from huggingface_hub import snapshot_download
 
-REPO_NAME = 'Qwen/Qwen3-4B-Instruct-2507'
+REPO_NAME = 'Qwen/Qwen3-8B'
 WEIGHTS_DIR = f'weights/{REPO_NAME}'
 
 try:
