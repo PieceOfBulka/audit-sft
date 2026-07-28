@@ -20,7 +20,6 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from load_dataset import load_train_eval_dataset
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
@@ -41,6 +40,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--base-only", action="store_true", help="Оценить базовую модель без адаптера")
 
     p.add_argument("--num", type=int, default=50, help="Сколько примеров из test оценивать")
+    p.add_argument("--batch-size", type=int, default=8,
+                   help="Сколько примеров генерировать за один проход GPU (не путать с train batch)")
     p.add_argument("--max-new-tokens", type=int, default=512)
     p.add_argument("--lang", default="ru", help="Язык для BERTScore (ru -> mBERT по умолчанию)")
     p.add_argument("--bertscore-model", default=None, help="Переопределить модель BERTScore")
@@ -50,6 +51,38 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_model(args, model_dir, device):
+    """Пытаемся грузить через Unsloth (быстрый inference-путь, только CUDA),
+    иначе — обычный transformers + SDPA-attention (работает везде)."""
+    if device == "cuda":
+        try:
+            from unsloth import FastLanguageModel
+
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=model_dir,
+                max_seq_length=4096,  # с запасом под prompt+max_new_tokens при генерации
+                dtype=torch.bfloat16,
+                load_in_4bit=False,
+            )
+            if not args.base_only:
+                if not args.adapter:
+                    raise SystemExit("Нужен --adapter (или --base-only для оценки без LoRA)")
+                from peft import PeftModel
+                model = PeftModel.from_pretrained(model, args.adapter)
+                print(f"== LoRA-адаптер загружен из {args.adapter} (Unsloth backend)")
+            else:
+                print("== Оценка базовой модели без адаптера (baseline, Unsloth backend)")
+
+            FastLanguageModel.for_inference(model)  # переключает модель в быстрый inference-режим
+
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.padding_side = "left"
+            return model, tokenizer
+        except ImportError:
+            print("== Unsloth недоступен, откатываюсь на обычный transformers+SDPA")
+
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -57,7 +90,9 @@ def load_model(args, model_dir, device):
 
     dtype = torch.bfloat16 if device == "cuda" else (
         torch.float16 if device == "mps" else torch.float32)
-    model = AutoModelForCausalLM.from_pretrained(model_dir, dtype=dtype, low_cpu_mem_usage=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_dir, dtype=dtype, low_cpu_mem_usage=True, attn_implementation="sdpa"
+    )
 
     if not args.base_only:
         if not args.adapter:
@@ -74,21 +109,31 @@ def load_model(args, model_dir, device):
 
 
 @torch.no_grad()
-def generate_answer(model, tokenizer, system_prompt, example, device, max_new_tokens):
-    msgs = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": build_user_content(example)},
+def generate_batch(model, tokenizer, system_prompt, examples, device, max_new_tokens):
+    """Генерирует ответы для целого батча примеров за один вызов model.generate.
+
+    Паддинг слева (tokenizer.padding_side='left') гарантирует, что все строки
+    в батче заканчивают промпт на одной и той же позиции — поэтому обрезка
+    prompt-части (inputs['input_ids'].shape[1]) корректна одинаково для всех строк.
+    """
+    prompts = [
+        tokenizer.apply_chat_template(
+            [{"role": "system", "content": system_prompt},
+             {"role": "user", "content": build_user_content(ex)}],
+            tokenize=False, add_generation_prompt=True,
+        )
+        for ex in examples
     ]
-    prompt_text = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer(prompt_text, return_tensors="pt", add_special_tokens=False).to(device)
+    inputs = tokenizer(prompts, return_tensors="pt", padding=True,
+                       add_special_tokens=False).to(device)
     out = model.generate(
         **inputs,
         max_new_tokens=max_new_tokens,
         do_sample=False,  # greedy -> воспроизводимая оценка
         pad_token_id=tokenizer.pad_token_id,
     )
-    gen_ids = out[0][inputs["input_ids"].shape[1]:]
-    return tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+    gen_ids = out[:, inputs["input_ids"].shape[1]:]
+    return [tokenizer.decode(row, skip_special_tokens=True).strip() for row in gen_ids]
 
 
 def main():
@@ -116,12 +161,15 @@ def main():
     model, tokenizer = load_model(args, model_dir, device)
 
     preds, refs, questions = [], [], []
-    for i, ex in enumerate(subset):
-        pred = generate_answer(model, tokenizer, system_prompt, ex, device, args.max_new_tokens)
-        preds.append(pred)
-        refs.append(ex["answer"])
-        questions.append(ex["question"])
-        print(f"  [{i + 1}/{n}] сгенерирован ответ ({len(pred)} символов)")
+    examples = list(subset)
+    for start in range(0, len(examples), args.batch_size):
+        batch = examples[start:start + args.batch_size]
+        batch_preds = generate_batch(model, tokenizer, system_prompt, batch, device,
+                                     args.max_new_tokens)
+        preds.extend(batch_preds)
+        refs.extend(ex["answer"] for ex in batch)
+        questions.extend(ex["question"] for ex in batch)
+        print(f"  [{min(start + args.batch_size, n)}/{n}] сгенерирован батч ({len(batch)} примеров)")
 
     from bert_score import score as bertscore
     print("== считаем BERTScore (первый запуск скачает модель эмбеддингов)...")
