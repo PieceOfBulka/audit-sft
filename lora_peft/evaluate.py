@@ -62,8 +62,10 @@ def _slug(text: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)
 
 
-def default_out_path(out_dir: str, model_name: str, dataset_label: str) -> str:
-    filename = f"{_slug(model_name)}_{_slug(dataset_label)}.json"
+def default_out_path(out_dir: str, model_name: str, dataset_label: str, adapter_path: str) -> str:
+    filename = f"{_slug(model_name)}_{_slug(dataset_label)}"
+    filename += f"_{_slug(adapter_path)}" if adapter_path else "_base"
+    filename += ".json"
     return os.path.join(out_dir, filename)
 
 
@@ -171,7 +173,7 @@ def main():
     print(f"== device={device} | model={model_dir}")
 
     dataset_label = args.domain or os.path.splitext(os.path.basename(dataset_path))[0]
-    out_path = args.out or default_out_path(args.out_dir, args.model, dataset_label)
+    out_path = args.out or default_out_path(args.out_dir, args.model, dataset_label, args.adapter)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
     test = load_train_eval_dataset(dataset_path)["test"]
