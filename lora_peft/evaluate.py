@@ -11,6 +11,10 @@
         --adapter ./lora-adapter/zakupki --num 50
 
     python lora_peft/evaluate.py --domain zakupki --model Qwen/Qwen3-8B --base-only
+
+Результаты по умолчанию сохраняются в bertscores/<модель>_<датасет>.json
+(например bertscores/Qwen_Qwen3-8B_zakupki.json); переопределить путь можно
+через --out, либо только каталог через --out-dir.
 """
 import argparse
 import json
@@ -45,9 +49,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-new-tokens", type=int, default=512)
     p.add_argument("--lang", default="ru", help="Язык для BERTScore (ru -> mBERT по умолчанию)")
     p.add_argument("--bertscore-model", default=None, help="Переопределить модель BERTScore")
-    p.add_argument("--out", default="./bertscore_results.json")
+    p.add_argument("--out", default=None,
+                   help="Путь к файлу результатов. По умолчанию — "
+                        "bertscores/<модель>_<датасет>.json")
+    p.add_argument("--out-dir", default="./bertscores",
+                   help="Каталог для результатов, если --out не задан явно")
 
     return p.parse_args()
+
+
+def _slug(text: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)
+
+
+def default_out_path(out_dir: str, model_name: str, dataset_label: str) -> str:
+    filename = f"{_slug(model_name)}_{_slug(dataset_label)}.json"
+    return os.path.join(out_dir, filename)
 
 
 def load_model(args, model_dir, device):
@@ -153,6 +170,10 @@ def main():
     model_dir = resolve_model_dir(args.model)
     print(f"== device={device} | model={model_dir}")
 
+    dataset_label = args.domain or os.path.splitext(os.path.basename(dataset_path))[0]
+    out_path = args.out or default_out_path(args.out_dir, args.model, dataset_label)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
     test = load_train_eval_dataset(dataset_path)["test"]
     n = min(args.num, len(test))
     subset = test.select(range(n))
@@ -196,9 +217,9 @@ def main():
         {"question": q, "f1": round(f.item(), 4), "prediction": p, "reference": r}
         for q, p, r, f in zip(questions, preds, refs, F1)
     ]
-    with open(args.out, "w", encoding="utf-8") as fh:
+    with open(out_path, "w", encoding="utf-8") as fh:
         json.dump({"summary": result, "examples": per_example}, fh, ensure_ascii=False, indent=2)
-    print(f"\n== подробные результаты сохранены в {args.out}")
+    print(f"\n== подробные результаты сохранены в {out_path}")
 
 
 if __name__ == "__main__":
