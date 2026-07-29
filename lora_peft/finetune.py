@@ -81,6 +81,15 @@ def parse_args() -> argparse.Namespace:
 
     return p.parse_args()
 
+def _slug(text: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)
+
+def default_adapter_path(model_name: str, dataset_label: str, adapter_name: str) -> str:
+    if adapter_name:
+        return os.path.join('./lora-adapter', adapter_name)
+    filename = f"{_slug(model_name)}_{_slug(dataset_label)}_adapter"
+    return os.path.join('./lora-adapter', filename)
+
 
 def main():
     args = parse_args()
@@ -88,15 +97,14 @@ def main():
     if args.dataset is None and args.domain is None:
         raise SystemExit("Нужен --domain (встроенный профиль) или --dataset + --system-prompt")
 
-    dataset_path = args.dataset or DOMAIN_DATASETS[args.domain]
+    dataset_path = DOMAIN_DATASETS.get(args.dataset) or args.dataset or DOMAIN_DATASETS.get(args.domain)
     system_prompt = args.system_prompt or (
         DOMAIN_SYSTEM_PROMPTS[args.domain] if args.domain else None
     )
     if system_prompt is None:
         raise SystemExit("Без --domain нужно явно передать --system-prompt")
 
-    adapter_name = args.adapter_name or args.domain or "default"
-    adapter_dir = os.path.join("./lora-adapter", adapter_name)
+    adapter_dir = default_adapter_path(model_name=args.model, dataset_label=dataset_path, adapter_name=args.adapter_name)
 
     device = pick_device()
     model_dir = resolve_model_dir(args.model)

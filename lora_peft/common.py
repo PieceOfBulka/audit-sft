@@ -137,4 +137,6 @@ DOMAIN_SYSTEM_PROMPTS = {
 DOMAIN_DATASETS = {
     "audit": os.path.join("data", "claude_answers.json"),
     "zakupki": os.path.join("data", "zakupki", "dataset.json"),
+    'easydataset': os.path.join("data", "zakupki", "easydataset.json"),
+    'zakupki5500': os.path.join("data", "zakupki", "dataset5500.json"),
 }
