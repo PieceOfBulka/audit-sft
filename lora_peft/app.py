@@ -447,7 +447,7 @@ def launch_judge(model_id, adapter_path, dataset_choice, base_only, backend_name
 
     cmd = [sys.executable, os.path.join(_ROOT, "lora_peft", "llm_as_judge.py"),
            "--model", resolve_model_dir(model_id), "--domain", dataset_choice,
-           "--question-model", backend["model"], "--judge-model", backend["model"],
+           "--judge-model", backend["model"],
            "--openai-api-key", api_key, "--iterations", str(iterations)]
     if backend["base_url"]:
         cmd += ["--openai-base-url", backend["base_url"]]
@@ -497,7 +497,8 @@ def build_eval_tab():
             with gr.Row():
                 judge_backend = gr.Radio(choices=list(JUDGE_BACKENDS), value="OpenAI (gpt-5-nano)",
                                          label="Бэкенд судьи/генератора вопросов")
-                judge_iterations = gr.Slider(1, 50, value=5, step=1, label="Число вопросов за прогон")
+                judge_iterations = gr.Slider(1, 50, value=5, step=1,
+                                             label="Сколько примеров из test-сплита оценить")
                 judge_greedy = gr.Checkbox(value=False, label="greedy-генерация ответа")
             with gr.Row():
                 judge_start_btn = gr.Button("▶️ Запустить LLM-as-judge", variant="primary")

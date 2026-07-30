@@ -14,8 +14,10 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import trackio
 
 from lora_peft.sft_lora_peft import pick_device, torch_dtype
-from lora_peft.common import (DOMAIN_JUDGE, DOMAIN_QUESTIONS, DOMAIN_SYSTEM_PROMPTS,
-                               load_run_meta, silence_max_length_warning, slug)
+from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_JUDGE, DOMAIN_SYSTEM_PROMPTS,
+                               build_user_content, load_run_meta,
+                               silence_max_length_warning, slug)
+from load_dataset import load_train_eval_dataset
 
 load_dotenv()
 
@@ -28,9 +30,9 @@ MAX_TOTAL_NEW_TOKENS = 8192
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description='LLM as a judge оценка')
-    p.add_argument("--domain", choices=sorted(DOMAIN_QUESTIONS), default="audit",
-                   help="Определяет системный промпт оцениваемой модели и промпты "
-                        "для генерации вопроса/судейства (common.py)")
+    p.add_argument("--domain", choices=sorted(DOMAIN_DATASETS), default="audit",
+                   help="Определяет системный промпт оцениваемой модели, промпт судьи "
+                        "и датасет, из которого берутся вопрос+эталонный ответ (common.py)")
     p.add_argument(
         '--model',
         default='',
@@ -62,21 +64,23 @@ def parse_args() -> argparse.Namespace:
         help="Детерминированная генерация (без сэмплинга)",
     )
 
-    # --- бэкенд генератора вопросов / судьи (OpenAI-совместимый API) ---
+    # --- бэкенд судьи (OpenAI-совместимый API) ---
     p.add_argument("--openai-base-url", default=os.getenv("OPENAI_BASE_URL"),
                    help="URL OpenAI-совместимого API. Не задан -> официальный OpenAI. "
                         "Например http://10.246.6.82:8080/v1 для внутреннего сервера")
     p.add_argument("--openai-api-key", default=os.getenv("OPENAI_TOKEN", "not-needed"),
                    help="API-ключ. Внутренние серверы обычно его не проверяют")
-    p.add_argument("--question-model", default=os.getenv("QUESTION_MODEL_NAME", "gpt-5-nano"),
-                   help="Модель для генерации вопроса, например minimax-m3")
     p.add_argument("--judge-model", default=os.getenv("JUDGE_MODEL_NAME", "gpt-5-nano"),
                    help="Модель-судья, например minimax-m3")
 
-    # --- запуск без интерактива (для UI/скриптов) ---
+    # --- сколько примеров из test-сплита датасета оценивать ---
     p.add_argument("--iterations", type=int, default=None,
-                   help="Прогнать ровно N вопросов и выйти без вопроса 'продолжаем?'. "
-                        "Не задано -> интерактивный режим (спрашивает y/n после каждого)")
+                   help="Оценить ровно N примеров из test-сплита и выйти без вопроса "
+                        "'продолжаем?'. Не задано -> интерактивно по всему test-сплиту "
+                        "(спрашивает y/n после каждого примера)")
+    p.add_argument("--shuffle", action="store_true",
+                   help="Перемешать test-сплит перед выбором примеров (иначе — по порядку)")
+    p.add_argument("--seed", type=int, default=42, help="Seed для --shuffle")
     return p.parse_args()
 
 def load_model(use_lora: bool, model_path: str, adapter_path: str, device: str):
@@ -178,26 +182,16 @@ def generate_reply(
     return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
 
 
-def generate_question(client: OpenAI, model: str, question_prompt: str):
-    question_generation = client.chat.completions.create(
-        model=model,
-        messages=[
-            {
-                'role': 'system',
-                'content': question_prompt
-            }
-        ]
-    )
-
-    return question_generation.choices[0].message.content
-
-def generate_judgement(client: OpenAI, model: str, question: str, reply: str, judge_prompt: str):
+def generate_judgement(client: OpenAI, model: str, question: str, reference_answer: str,
+                       reply: str, judge_prompt: str):
+    """Судья сравнивает reply с reference_answer (реальным ответом из test-сплита
+    датасета) — без этого faithfulness была бы неверифицируемой (не с чем сверять)."""
     judgement_generation = client.chat.completions.create(
         model=model,
         messages=[
             {
                 'role': 'user',
-                'content': question
+                'content': f"Вопрос:\n{question}\n\nЭталонный ответ:\n{reference_answer}"
             },
             {
                 'role': 'assistant',
@@ -220,12 +214,20 @@ def main():
     device = pick_device()
     print(f"Устройство: {device}")
     print(f"== judge backend: {args.openai_base_url or 'https://api.openai.com/v1 (по умолчанию)'} "
-          f"| question_model={args.question_model} | judge_model={args.judge_model}")
+          f"| judge_model={args.judge_model}")
     client = OpenAI(api_key=args.openai_api_key, base_url=args.openai_base_url or None)
 
     system_prompt = args.system or DOMAIN_SYSTEM_PROMPTS[args.domain]
-    question_prompt = DOMAIN_QUESTIONS[args.domain]
     judge_prompt = DOMAIN_JUDGE[args.domain]
+
+    dataset_path = DOMAIN_DATASETS[args.domain]
+    test = load_train_eval_dataset(dataset_path)["test"]
+    if args.shuffle:
+        test = test.shuffle(seed=args.seed)
+    if args.iterations is not None:
+        test = test.select(range(min(args.iterations, len(test))))
+    print(f"== вопросы и эталонные ответы берутся из test-сплита {dataset_path} "
+          f"({len(test)} примеров)")
 
     reply_model, reply_tokenizer = load_model(
         use_lora=args.lora,
@@ -245,11 +247,11 @@ def main():
     print('===Начало цикла llm-as-judge\n')
     iteration = 0
     try:
-        while args.iterations is None or iteration < args.iterations:
+        for example in test:
             iteration += 1
-            if args.iterations is not None:
-                print(f'\n--- Вопрос {iteration}/{args.iterations} ---')
-            question = generate_question(client, args.question_model, question_prompt)
+            question = build_user_content(example)
+            reference_answer = example["answer"]
+            print(f'\n--- Пример {iteration}/{len(test)} ---')
             print(f'=Вопрос:\n{question}')
 
             reply_start = time.perf_counter()
@@ -268,7 +270,8 @@ def main():
             print(f'=Ответ модели ({reply_time:.1f} с):\n{reply}')
 
             judge_start = time.perf_counter()
-            judge = generate_judgement(client, args.judge_model, question, reply, judge_prompt)
+            judge = generate_judgement(client, args.judge_model, question, reference_answer,
+                                       reply, judge_prompt)
             judge_time = time.perf_counter() - judge_start
             judge_dict = json.loads(judge)
             reasoning = judge_dict.get("reasoning", "Описание отсутствует")
@@ -286,7 +289,7 @@ def main():
                     "judge_eval_time_sec": round(judge_time, 1),
                 }, step=iteration)
 
-            result_dir = f"judgements/judge_{slug(args.question_model)}"
+            result_dir = f"judgements/judge_{slug(args.judge_model)}"
             os.makedirs(result_dir, exist_ok=True)
             result_file = os.path.join(result_dir, args.model.rstrip('/').split('/')[-1])
             if args.lora:
@@ -295,6 +298,7 @@ def main():
             with open(result_file, 'a', encoding='utf-8') as f:
                 f.write('\n==============')
                 f.write(f'\n\n==Question\n{question}')
+                f.write(f'\n\n==Reference answer\n{reference_answer}')
                 f.write(f'\n\n==Reply ({reply_time:.1f} с)\n{reply}')
                 f.write(f'\n\n==Judgement ({judge_time:.1f} с)\n')
                 f.write(f'- faithfulness = {faithfulness}\n')
