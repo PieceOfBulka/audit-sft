@@ -257,21 +257,51 @@ def build_chat_tab():
 
 ALL_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
-_TRAIN_PROC: dict[str, subprocess.Popen | None] = {"proc": None}
+
+def make_proc_runner():
+    """Возвращает (run, stop) пару для запуска CLI-скрипта как подпроцесса со
+    стримингом stdout в лог-бокс. Отдельный holder на каждый вызов — так
+    вкладки 'Обучение' и 'Оценка' не мешают друг другу отдельными кнопками
+    'Остановить'."""
+    holder: dict[str, subprocess.Popen | None] = {"proc": None}
+
+    def run(cmd: list[str]):
+        if holder["proc"] is not None and holder["proc"].poll() is None:
+            yield "Процесс уже запущен — дождись завершения или останови его."
+            return
+        log = f"$ {' '.join(cmd)}\n\n"
+        yield log
+        proc = subprocess.Popen(cmd, cwd=_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1)
+        holder["proc"] = proc
+        for line in proc.stdout:
+            log += line
+            yield log
+        proc.wait()
+        log += f"\n== процесс завершён с кодом {proc.returncode}\n"
+        yield log
+
+    def stop():
+        proc = holder["proc"]
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            return "Остановлено (SIGTERM отправлен)."
+        return "Активного процесса нет."
+
+    return run, stop
 
 
 def _dataset_choice_names():
     return sorted(DOMAIN_DATASETS)
 
 
+_run_training, stop_training = make_proc_runner()
+
+
 def launch_training(model_id, dataset_choice, uploaded_file, custom_system_prompt,
                     adapter_name, rank, alpha, dropout, target_modules,
                     lr, batch_size, grad_accum, epochs, warmup_ratio,
                     group_by_length, liger, load_best):
-    if _TRAIN_PROC["proc"] is not None and _TRAIN_PROC["proc"].poll() is None:
-        yield "Обучение уже запущено — дождись завершения или перезапусти интерфейс."
-        return
-
     cmd = [sys.executable, os.path.join(_ROOT, "lora_peft", "finetune.py"),
            "--model", model_id,
            "--rank", str(rank), "--alpha", str(alpha), "--lora-dropout", str(dropout),
@@ -304,26 +334,7 @@ def launch_training(model_id, dataset_choice, uploaded_file, custom_system_promp
             return
         cmd += ["--domain", dataset_choice]
 
-    log = f"$ {' '.join(cmd)}\n\n"
-    yield log
-
-    proc = subprocess.Popen(cmd, cwd=_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1)
-    _TRAIN_PROC["proc"] = proc
-    for line in proc.stdout:
-        log += line
-        yield log
-    proc.wait()
-    log += f"\n== процесс завершён с кодом {proc.returncode}\n"
-    yield log
-
-
-def stop_training():
-    proc = _TRAIN_PROC["proc"]
-    if proc is not None and proc.poll() is None:
-        proc.terminate()
-        return "Обучение остановлено (SIGTERM отправлен)."
-    return "Активного обучения нет."
+    yield from _run_training(cmd)
 
 
 def build_train_tab():
@@ -376,7 +387,113 @@ def build_train_tab():
 
 
 # =====================================================================
-# Вкладка 3: Trackio
+# Вкладка 3: Оценка (BERTScore + LLM-as-judge)
+# =====================================================================
+
+# Пресеты OpenAI-совместимого бэкенда для судьи. api_key_env — переменная в
+# .env, откуда берётся ключ (не хардкодим сами значения в код).
+JUDGE_BACKENDS = {
+    "OpenAI (gpt-5-nano)": {
+        "base_url": None,  # None -> official OpenAI, ничего не передаём
+        "model": "gpt-5-nano",
+        "api_key_env": "OPENAI_TOKEN",
+    },
+    "Внутренний сервер (minimax/minimax-m3)": {
+        "base_url": "http://10.246.6.82:8080/v1",
+        "model": "minimax/minimax-m3",
+        "api_key_env": "INTERNAL_API_TOKEN",
+    },
+}
+
+_run_bertscore, stop_bertscore = make_proc_runner()
+_run_judge, stop_judge = make_proc_runner()
+
+
+def launch_bertscore(model_id, adapter_path, dataset_choice, base_only, num, batch_size):
+    cmd = [sys.executable, os.path.join(_ROOT, "lora_peft", "bertscore.py"),
+           "--model", model_id, "--domain", dataset_choice,
+           "--num", str(num), "--batch-size", str(batch_size)]
+    if base_only or not adapter_path or adapter_path == NO_ADAPTER:
+        cmd += ["--base-only"]
+    else:
+        cmd += ["--adapter", adapter_path]
+    yield from _run_bertscore(cmd)
+
+
+def launch_judge(model_id, adapter_path, dataset_choice, base_only, backend_name, iterations, greedy):
+    backend = JUDGE_BACKENDS[backend_name]
+    api_key = os.environ.get(backend["api_key_env"], "not-needed")
+
+    cmd = [sys.executable, os.path.join(_ROOT, "lora_peft", "llm_as_judge.py"),
+           "--model", resolve_model_dir(model_id), "--domain", dataset_choice,
+           "--question-model", backend["model"], "--judge-model", backend["model"],
+           "--openai-api-key", api_key, "--iterations", str(iterations)]
+    if backend["base_url"]:
+        cmd += ["--openai-base-url", backend["base_url"]]
+    if not base_only and adapter_path and adapter_path != NO_ADAPTER:
+        cmd += ["--lora", "--adapter", adapter_path]
+    if greedy:
+        cmd += ["--greedy"]
+    yield from _run_judge(cmd)
+
+
+def build_eval_tab():
+    with gr.Tab("📈 Оценка"):
+        gr.Markdown("Оценка модели/адаптера через `bertscore.py` (метрика к эталонным ответам) "
+                    "и `llm_as_judge.py` (LLM-судья по сгенерированным вопросам). "
+                    "Оба пишут метрики в тот же Trackio-run, что и обучение (если есть trackio_run.json рядом с адаптером).")
+
+        with gr.Row():
+            eval_model_dd = gr.Dropdown(choices=list_available_models(), allow_custom_value=True,
+                                        label="Модель")
+            eval_adapter_dd = gr.Dropdown(choices=[NO_ADAPTER] + list_available_adapters(),
+                                          value=NO_ADAPTER, label="LoRA-адаптер")
+            eval_refresh_btn = gr.Button("🔄")
+        eval_dataset_dd = gr.Dropdown(choices=_dataset_choice_names(), label="Датасет (--domain)")
+        eval_base_only = gr.Checkbox(value=False, label="Оценивать базовую модель (без адаптера)")
+
+        eval_refresh_btn.click(refresh_choices, None, [eval_model_dd, eval_adapter_dd])
+
+        with gr.Accordion("BERTScore", open=True):
+            with gr.Row():
+                bs_num = gr.Slider(5, 500, value=50, step=5, label="Число примеров")
+                bs_batch = gr.Slider(1, 32, value=8, step=1, label="batch_size (генерация)")
+            with gr.Row():
+                bs_start_btn = gr.Button("▶️ Запустить BERTScore", variant="primary")
+                bs_stop_btn = gr.Button("⏹ Остановить")
+            bs_log = gr.Textbox(label="Лог BERTScore", lines=15, max_lines=15,
+                                interactive=False, autoscroll=True)
+            bs_start_btn.click(
+                launch_bertscore,
+                [eval_model_dd, eval_adapter_dd, eval_dataset_dd, eval_base_only, bs_num, bs_batch],
+                bs_log,
+            )
+            bs_stop_btn.click(stop_bertscore, None, bs_log)
+
+        with gr.Accordion("LLM-as-judge", open=True):
+            gr.Markdown("Ключи бэкендов берутся из `.env`: `OPENAI_TOKEN` (официальный OpenAI) "
+                        "или `INTERNAL_API_TOKEN` (внутренний сервер).")
+            with gr.Row():
+                judge_backend = gr.Radio(choices=list(JUDGE_BACKENDS), value="OpenAI (gpt-5-nano)",
+                                         label="Бэкенд судьи/генератора вопросов")
+                judge_iterations = gr.Slider(1, 50, value=5, step=1, label="Число вопросов за прогон")
+                judge_greedy = gr.Checkbox(value=False, label="greedy-генерация ответа")
+            with gr.Row():
+                judge_start_btn = gr.Button("▶️ Запустить LLM-as-judge", variant="primary")
+                judge_stop_btn = gr.Button("⏹ Остановить")
+            judge_log = gr.Textbox(label="Лог LLM-as-judge", lines=20, max_lines=20,
+                                   interactive=False, autoscroll=True)
+            judge_start_btn.click(
+                launch_judge,
+                [eval_model_dd, eval_adapter_dd, eval_dataset_dd, eval_base_only,
+                 judge_backend, judge_iterations, judge_greedy],
+                judge_log,
+            )
+            judge_stop_btn.click(stop_judge, None, judge_log)
+
+
+# =====================================================================
+# Вкладка 4: Trackio
 # =====================================================================
 
 _TRACKIO_STATE: dict[str, int | None] = {"port": None}
@@ -425,6 +542,7 @@ with gr.Blocks(title="LoRA Finetuning Studio") as demo:
     gr.Markdown("# LoRA Finetuning Studio")
     build_chat_tab()
     build_train_tab()
+    build_eval_tab()
     build_trackio_tab()
 
 demo.queue()

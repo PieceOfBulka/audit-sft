@@ -14,11 +14,10 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import trackio
 
 from lora_peft.sft_lora_peft import pick_device, torch_dtype
-from lora_peft.common import DOMAIN_JUDGE, DOMAIN_QUESTIONS, DOMAIN_SYSTEM_PROMPTS, load_run_meta
+from lora_peft.common import (DOMAIN_JUDGE, DOMAIN_QUESTIONS, DOMAIN_SYSTEM_PROMPTS,
+                               load_run_meta, slug)
 
 load_dotenv()
-
-client = OpenAI(api_key=os.getenv('OPENAI_TOKEN'))
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_ADAPTER = os.path.join(_ROOT, "lora-adapter")
@@ -62,6 +61,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Детерминированная генерация (без сэмплинга)",
     )
+
+    # --- бэкенд генератора вопросов / судьи (OpenAI-совместимый API) ---
+    p.add_argument("--openai-base-url", default=os.getenv("OPENAI_BASE_URL"),
+                   help="URL OpenAI-совместимого API. Не задан -> официальный OpenAI. "
+                        "Например http://10.246.6.82:8080/v1 для внутреннего сервера")
+    p.add_argument("--openai-api-key", default=os.getenv("OPENAI_TOKEN", "not-needed"),
+                   help="API-ключ. Внутренние серверы обычно его не проверяют")
+    p.add_argument("--question-model", default=os.getenv("QUESTION_MODEL_NAME", "gpt-5-nano"),
+                   help="Модель для генерации вопроса, например minimax/minimax-m3")
+    p.add_argument("--judge-model", default=os.getenv("JUDGE_MODEL_NAME", "gpt-5-nano"),
+                   help="Модель-судья, например minimax/minimax-m3")
+
+    # --- запуск без интерактива (для UI/скриптов) ---
+    p.add_argument("--iterations", type=int, default=None,
+                   help="Прогнать ровно N вопросов и выйти без вопроса 'продолжаем?'. "
+                        "Не задано -> интерактивный режим (спрашивает y/n после каждого)")
     return p.parse_args()
 
 def load_model(use_lora: bool, model_path: str, adapter_path: str, device: str):
@@ -162,9 +177,9 @@ def generate_reply(
     return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
 
 
-def generate_question(question_prompt: str):
+def generate_question(client: OpenAI, model: str, question_prompt: str):
     question_generation = client.chat.completions.create(
-        model=os.getenv('QUESTION_MODEL_NAME', 'gpt-5-nano'),
+        model=model,
         messages=[
             {
                 'role': 'system',
@@ -175,9 +190,9 @@ def generate_question(question_prompt: str):
 
     return question_generation.choices[0].message.content
 
-def generate_judgement(question: str, reply: str, judge_prompt: str):
+def generate_judgement(client: OpenAI, model: str, question: str, reply: str, judge_prompt: str):
     judgement_generation = client.chat.completions.create(
-        model=os.getenv('JUDGE_MODEL_NAME', 'gpt-5-nano'),
+        model=model,
         messages=[
             {
                 'role': 'user',
@@ -203,6 +218,9 @@ def main():
     args = parse_args()
     device = pick_device()
     print(f"Устройство: {device}")
+    print(f"== judge backend: {args.openai_base_url or 'https://api.openai.com/v1 (по умолчанию)'} "
+          f"| question_model={args.question_model} | judge_model={args.judge_model}")
+    client = OpenAI(api_key=args.openai_api_key, base_url=args.openai_base_url or None)
 
     system_prompt = args.system or DOMAIN_SYSTEM_PROMPTS[args.domain]
     question_prompt = DOMAIN_QUESTIONS[args.domain]
@@ -226,9 +244,11 @@ def main():
     print('===Начало цикла llm-as-judge\n')
     iteration = 0
     try:
-        while True:
+        while args.iterations is None or iteration < args.iterations:
             iteration += 1
-            question = generate_question(question_prompt)
+            if args.iterations is not None:
+                print(f'\n--- Вопрос {iteration}/{args.iterations} ---')
+            question = generate_question(client, args.question_model, question_prompt)
             print(f'=Вопрос:\n{question}')
 
             reply_start = time.perf_counter()
@@ -247,7 +267,7 @@ def main():
             print(f'=Ответ модели ({reply_time:.1f} с):\n{reply}')
 
             judge_start = time.perf_counter()
-            judge = generate_judgement(question, reply, judge_prompt)
+            judge = generate_judgement(client, args.judge_model, question, reply, judge_prompt)
             judge_time = time.perf_counter() - judge_start
             judge_dict = json.loads(judge)
             reasoning = judge_dict.get("reasoning", "Описание отсутствует")
@@ -265,7 +285,7 @@ def main():
                     "judge_eval_time_sec": round(judge_time, 1),
                 }, step=iteration)
 
-            result_dir = f"judgements/judge_{os.getenv('QUESTION_MODEL_NAME', 'gpt-5-nano')}"
+            result_dir = f"judgements/judge_{slug(args.question_model)}"
             os.makedirs(result_dir, exist_ok=True)
             result_file = os.path.join(result_dir, args.model.rstrip('/').split('/')[-1])
             if args.lora:
@@ -281,9 +301,10 @@ def main():
                 f.write(f'- consciousness = {consciousness}\n')
                 f.write(f'- Reasoning\n{reasoning}\n')
 
-            is_continue = input('\n====Продолжаем? (y/n): ')
-            if is_continue != 'y':
-                break
+            if args.iterations is None:
+                is_continue = input('\n====Продолжаем? (y/n): ')
+                if is_continue != 'y':
+                    break
     finally:
         if run_meta:
             trackio.finish()
