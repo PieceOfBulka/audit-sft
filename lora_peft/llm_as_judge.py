@@ -208,6 +208,31 @@ def generate_judgement(client: OpenAI, model: str, question: str, reference_answ
     return judgement_generation.choices[0].message.content
 
 
+def parse_judge_json(raw: str) -> dict:
+    """Некоторые бэкенды (особенно внутренние, без честной поддержки
+    response_format=json_object) всё равно оборачивают JSON в ```json...```
+    или добавляют текст вокруг. Вырезаем содержимое между первой '{' и
+    последней '}' перед парсингом; если и это не JSON — не роняем весь
+    прогон, возвращаем нулевые оценки с сырым текстом в reasoning."""
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:]
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        text = text[start:end + 1]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        print(f"== ПРЕДУПРЕЖДЕНИЕ: судья вернул невалидный JSON ({exc}), ставлю нулевые оценки")
+        return {
+            "faithfulness_score": 0,
+            "completeness_score": 0,
+            "consciousness_score": 0,
+            "reasoning": f"[невалидный JSON от судьи] {raw[:2000]}",
+        }
+
 
 def main():
     args = parse_args()
@@ -244,6 +269,13 @@ def main():
         print(f"== {os.path.join(args.adapter, 'trackio_run.json')} не найден — "
               "пропускаю логирование в Trackio (адаптер обучен без finetune.py?)")
 
+    result_dir = f"judgements/judge_{slug(args.judge_model)}"
+    os.makedirs(result_dir, exist_ok=True)
+    result_file = os.path.join(result_dir, args.model.rstrip('/').split('/')[-1])
+    if args.lora:
+        result_file += f"&&{args.adapter.rstrip('/').split('/')[-1]}"
+    result_file += '.txt'
+
     print('===Начало цикла llm-as-judge\n')
     iteration = 0
     try:
@@ -273,7 +305,7 @@ def main():
             judge = generate_judgement(client, args.judge_model, question, reference_answer,
                                        reply, judge_prompt)
             judge_time = time.perf_counter() - judge_start
-            judge_dict = json.loads(judge)
+            judge_dict = parse_judge_json(judge)
             reasoning = judge_dict.get("reasoning", "Описание отсутствует")
             faithfulness = judge_dict.get("faithfulness_score", 0)
             completeness = judge_dict.get("completeness_score", 0)
@@ -289,12 +321,6 @@ def main():
                     "judge_eval_time_sec": round(judge_time, 1),
                 }, step=iteration)
 
-            result_dir = f"judgements/judge_{slug(args.judge_model)}"
-            os.makedirs(result_dir, exist_ok=True)
-            result_file = os.path.join(result_dir, args.model.rstrip('/').split('/')[-1])
-            if args.lora:
-                result_file += f"&&{args.adapter.rstrip('/').split('/')[-1]}"
-            result_file += '.txt'
             with open(result_file, 'a', encoding='utf-8') as f:
                 f.write('\n==============')
                 f.write(f'\n\n==Question\n{question}')
@@ -312,6 +338,10 @@ def main():
                     break
     finally:
         if run_meta:
+            if os.path.isfile(result_file):
+                trackio.log_artifact(result_file, name=f"{run_meta['run_name']}-judge-report",
+                                     type="report")
+                print(f"== репорт судьи сохранён как artifact в Trackio: {result_file}")
             trackio.finish()
 
 if __name__=='__main__':
