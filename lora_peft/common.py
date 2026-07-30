@@ -61,6 +61,42 @@ def resolve_model_dir(model: str) -> str:
     return os.path.join(_root, "weights", model)
 
 
+def _repo_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def list_available_models(max_depth: int = 3) -> list[str]:
+    """Сканирует weights/ и возвращает repo-id-подобные пути (относительно
+    weights/) для каждой найденной папки с config.json — то, что можно
+    передать в --model / resolve_model_dir."""
+    weights_root = os.path.join(_repo_root(), "weights")
+    found = []
+    if not os.path.isdir(weights_root):
+        return found
+    for dirpath, dirnames, filenames in os.walk(weights_root):
+        depth = os.path.relpath(dirpath, weights_root).count(os.sep)
+        if depth >= max_depth:
+            dirnames[:] = []
+            continue
+        if "config.json" in filenames:
+            found.append(os.path.relpath(dirpath, weights_root))
+            dirnames[:] = []  # не спускаемся внутрь весов модели
+    return sorted(found)
+
+
+def list_available_adapters() -> list[str]:
+    """Сканирует lora-adapter/ (в корне репо) на предмет папок с adapter_config.json."""
+    adapter_root = os.path.join(_repo_root(), "lora-adapter")
+    found = []
+    if not os.path.isdir(adapter_root):
+        return found
+    for name in sorted(os.listdir(adapter_root)):
+        path = os.path.join(adapter_root, name)
+        if os.path.isfile(os.path.join(path, "adapter_config.json")):
+            found.append(path)
+    return found
+
+
 class TimingCallback(TrainerCallback):
     """Замер времени: общее, на эпоху и на шаг (optimizer step, без eval)."""
 
