@@ -203,6 +203,10 @@ DOMAIN_SYSTEM_PROMPTS = {
                 "если ответа нет, просто скажи об этом прямо. "
                 "Отвечай на русском."),
 }
+# easydataset / zakupki5500 — альтернативные версии датасета закупок (другой
+# источник/размер), домен и системный промпт у них тот же, что у "zakupki".
+DOMAIN_SYSTEM_PROMPTS["easydataset"] = DOMAIN_SYSTEM_PROMPTS["zakupki"]
+DOMAIN_SYSTEM_PROMPTS["zakupki5500"] = DOMAIN_SYSTEM_PROMPTS["zakupki"]
 
 DOMAIN_DATASETS = {
     "audit": os.path.join("data", "claude_answers.json"),
