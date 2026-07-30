@@ -27,14 +27,15 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unsloth import FastLanguageModel  # должен импортироваться первым (патчит transformers)
 
 import torch
-from transformers import DataCollatorForSeq2Seq, Trainer, TrainingArguments
+from transformers import DataCollatorForSeq2Seq, Trainer
 
 import trackio
 
 from load_dataset import load_train_eval_dataset
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                TRACKIO_PROJECT, TimingCallback, build_run_name,
-                               make_tokenize_fn, pick_device, resolve_model_dir,
+                               build_training_arguments, make_tokenize_fn,
+                               pick_device, resolve_model_dir,
                                save_run_meta, slug)
 
 
@@ -148,17 +149,17 @@ def main():
 
     collator = DataCollatorForSeq2Seq(tokenizer, label_pad_token_id=-100, padding=True)
 
-    training_args = TrainingArguments(
+    training_args = build_training_arguments(
+        group_by_length=args.group_by_length,
+        warmup_ratio=args.warmup_ratio,
         output_dir=args.output_dir,
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum_steps,
         learning_rate=args.lr,
-        warmup_ratio=args.warmup_ratio,
         bf16=(device == "cuda"),
         fp16=(device == "mps"),
-        group_by_length=args.group_by_length,
         use_liger_kernel=args.liger,
         logging_steps=10,
         eval_strategy="steps",

@@ -3,12 +3,13 @@
 Используется finetune.py, evaluate.py и llm_as_judge.py, чтобы не дублировать
 логику между разными датасетами/доменами (audit, zakupki, ...).
 """
+import inspect
 import json
 import os
 import time
 
 import torch
-from transformers import TrainerCallback
+from transformers import TrainerCallback, TrainingArguments
 
 # Единый проект Trackio для всех LoRA-экспериментов — так все run'ы видны
 # рядом в одном дашборде вне зависимости от домена/модели.
@@ -95,6 +96,33 @@ def list_available_adapters() -> list[str]:
         if os.path.isfile(os.path.join(path, "adapter_config.json")):
             found.append(path)
     return found
+
+
+def build_training_arguments(*, group_by_length: bool, warmup_ratio: float, **kwargs) -> TrainingArguments:
+    """TrainingArguments(**kwargs), но group_by_length/warmup_ratio передаются
+    под тем именем, которое реально принимает установленная версия
+    transformers — она переименовывает эти параметры между релизами
+    (group_by_length -> train_sampling_strategy="group_by_length",
+    warmup_ratio -> warmup_step с поддержкой float) без единого цикла
+    депрекации на все сразу, так что нельзя полагаться на конкретное имя."""
+    ta_params = inspect.signature(TrainingArguments.__init__).parameters
+
+    if "warmup_ratio" in ta_params:
+        kwargs["warmup_ratio"] = warmup_ratio
+    elif "warmup_step" in ta_params:
+        kwargs["warmup_step"] = warmup_ratio  # float = доля шагов
+    else:
+        print("== предупреждение: не нашёл ни warmup_ratio, ни warmup_step в TrainingArguments")
+
+    if group_by_length:
+        if "group_by_length" in ta_params:
+            kwargs["group_by_length"] = True
+        elif "train_sampling_strategy" in ta_params:
+            kwargs["train_sampling_strategy"] = "group_by_length"
+        else:
+            print("== предупреждение: не нашёл ни group_by_length, ни train_sampling_strategy")
+
+    return TrainingArguments(**kwargs)
 
 
 class TimingCallback(TrainerCallback):

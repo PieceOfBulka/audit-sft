@@ -7,9 +7,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
 import torch
 from transformers import (DataCollatorForSeq2Seq, Trainer,
-                          TrainerCallback, TrainingArguments)
+                          TrainerCallback)
 
 from load_dataset import load_train_eval_dataset
+from lora_peft.common import build_training_arguments
 from train import TimingCallback, pick_device
 
 p = argparse.ArgumentParser(description='LoRA дообучение модели')
@@ -95,17 +96,17 @@ collator = DataCollatorForSeq2Seq(
     tokenizer, label_pad_token_id=-100, padding=True
 )
 
-training_args = TrainingArguments(
+training_args = build_training_arguments(
+    group_by_length=True,
+    warmup_ratio=0.03,
     output_dir="./lora",
     num_train_epochs=2,
     per_device_train_batch_size=4,
     per_device_eval_batch_size=4,
     gradient_accumulation_steps=2,
     learning_rate=1e-4,
-    warmup_ratio=0.03,
     bf16=(device == "cuda"),
     fp16=(device == "mps"),
-    group_by_length=True,
     use_liger_kernel=True,
     logging_steps=10,
     eval_strategy="steps",

@@ -9,9 +9,10 @@ import time
 
 import torch
 from transformers import (AutoTokenizer, DataCollatorForSeq2Seq, Trainer,
-                          TrainerCallback, TrainingArguments)
+                          TrainerCallback)
 
 from load_dataset import load_train_eval_dataset
+from lora_peft.common import build_training_arguments
 from sft_lora_peft import MODEL_DIR, get_model_with_lora, pick_device
 
 device = pick_device()
@@ -139,17 +140,17 @@ def main():
         tokenizer, label_pad_token_id=-100, padding=True
     )
 
-    training_args = TrainingArguments(
+    training_args = build_training_arguments(
+        group_by_length=True,
+        warmup_ratio=0.03,
         output_dir="./lora",
         num_train_epochs=2,
         per_device_train_batch_size=32,
         per_device_eval_batch_size=32,
         gradient_accumulation_steps=2,
         learning_rate=8e-4,
-        warmup_ratio=0.03,
         bf16=(device == "cuda"),
         fp16=(device == "mps"),
-        group_by_length=True,
         use_liger_kernel=True,
         logging_steps=10,
         eval_strategy="steps",
