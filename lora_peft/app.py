@@ -414,16 +414,8 @@ with gr.Blocks(title="LoRA Finetuning Studio") as demo:
 demo.queue()
 
 if __name__ == "__main__":
-    # server_name="0.0.0.0" — слушать все интерфейсы, а не только localhost.
-    # server_port фиксирован, чтобы firewall на сервере мог разрешить ровно этот
-    # один порт, а не диапазон. auth — минимальная защита самого приложения
-    # (Gradio Basic Auth), т.к. 0.0.0.0 сам по себе доступен всем в сети/подсети.
-    auth = None
-    ui_user = os.environ.get("APP_UI_USER")
-    ui_password = os.environ.get("APP_UI_PASSWORD")
-    if ui_user and ui_password:
-        auth = (ui_user, ui_password)
-    else:
-        print("== ВНИМАНИЕ: APP_UI_USER/APP_UI_PASSWORD не заданы — UI поднимется без пароля")
-
-    demo.launch(server_name="0.0.0.0", server_port=7860, auth=auth)
+    # server_name="0.0.0.0" — слушать все интерфейсы, а не только localhost,
+    # чтобы открывалось по http://<IP сервера>:7860 с рабочего ноутбука.
+    # server_port фиксирован, чтобы firewall при желании мог разрешить
+    # ровно этот один порт, а не диапазон.
+    demo.launch(server_name="0.0.0.0", server_port=7860)
