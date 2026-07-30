@@ -1,13 +1,23 @@
 """Общие утилиты для обучения и оценки LoRA-адаптеров.
 
-Используется finetune.py и evaluate.py, чтобы не дублировать логику
-между разными датасетами/доменами (audit, zakupki, ...).
+Используется finetune.py, evaluate.py и llm_as_judge.py, чтобы не дублировать
+логику между разными датасетами/доменами (audit, zakupki, ...).
 """
+import json
 import os
 import time
 
 import torch
 from transformers import TrainerCallback
+
+# Единый проект Trackio для всех LoRA-экспериментов — так все run'ы видны
+# рядом в одном дашборде вне зависимости от домена/модели.
+TRACKIO_PROJECT = "lora-finetuning"
+
+# Имя файла с метаданными run'а, который сохраняется рядом с адаптером,
+# чтобы evaluate.py/llm_as_judge.py могли переоткрыть тот же Trackio-run
+# (resume="must"), не зная и не пересобирая гиперпараметры заново.
+RUN_META_FILENAME = "trackio_run.json"
 
 
 def pick_device() -> str:
@@ -16,6 +26,30 @@ def pick_device() -> str:
     if torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def slug(text: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)
+
+
+def build_run_name(domain_or_label: str, model_name: str, rank: int, alpha: int, lr: float) -> str:
+    return f"{slug(domain_or_label)}_{slug(model_name)}_r{rank}a{alpha}_lr{lr:g}"
+
+
+def save_run_meta(adapter_dir: str, run_name: str) -> None:
+    """Пишет trackio_run.json рядом с адаптером — чтобы оценочные скрипты
+    могли дописывать метрики в тот же run, который создал finetune.py."""
+    os.makedirs(adapter_dir, exist_ok=True)
+    with open(os.path.join(adapter_dir, RUN_META_FILENAME), "w", encoding="utf-8") as fh:
+        json.dump({"project": TRACKIO_PROJECT, "run_name": run_name}, fh, ensure_ascii=False)
+
+
+def load_run_meta(adapter_dir: str) -> dict | None:
+    path = os.path.join(adapter_dir, RUN_META_FILENAME)
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
 
 
 def resolve_model_dir(model: str) -> str:

@@ -29,10 +29,13 @@ from unsloth import FastLanguageModel  # должен импортировать
 import torch
 from transformers import DataCollatorForSeq2Seq, Trainer, TrainingArguments
 
+import trackio
+
 from load_dataset import load_train_eval_dataset
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
-                               TimingCallback, make_tokenize_fn, pick_device,
-                               resolve_model_dir)
+                               TRACKIO_PROJECT, TimingCallback, build_run_name,
+                               make_tokenize_fn, pick_device, resolve_model_dir,
+                               save_run_meta, slug)
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,13 +84,10 @@ def parse_args() -> argparse.Namespace:
 
     return p.parse_args()
 
-def _slug(text: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)
-
 def default_adapter_path(model_name: str, dataset_label: str, adapter_name: str) -> str:
     if adapter_name:
         return os.path.join('./lora-adapter', adapter_name)
-    filename = f"{_slug(model_name)}_{_slug(dataset_label)}_adapter"
+    filename = f"{slug(model_name)}_{slug(dataset_label)}_adapter"
     return os.path.join('./lora-adapter', filename)
 
 
@@ -109,6 +109,10 @@ def main():
     device = pick_device()
     model_dir = resolve_model_dir(args.model)
     target_modules = [m.strip() for m in args.target_modules.split(",") if m.strip()]
+
+    run_label = args.adapter_name or args.domain or os.path.basename(adapter_dir)
+    run_name = build_run_name(run_label, args.model, args.rank, args.alpha, args.lr)
+    trackio.init(project=TRACKIO_PROJECT, name=run_name, config=vars(args))
 
     print(f"== device={device} | model={model_dir} | dataset={dataset_path}")
     print(f"== LoRA: rank={args.rank} alpha={args.alpha} dropout={args.lora_dropout} "
@@ -163,7 +167,7 @@ def main():
         load_best_model_at_end=args.load_best_model_at_end,
         metric_for_best_model="eval_loss" if args.load_best_model_at_end else None,
         optim="adamw_8bit",
-        report_to="tensorboard",
+        report_to="trackio",
         dataloader_pin_memory=(device == "cuda"),
     )
 
@@ -183,6 +187,12 @@ def main():
 
     model.save_pretrained(adapter_dir)
     tokenizer.save_pretrained(adapter_dir)
+
+    # Метаданные run'а — чтобы evaluate.py/llm_as_judge.py дописывали метрики
+    # оценки (bertscore, judge, время) в тот же Trackio-run, не заводя новый.
+    save_run_meta(adapter_dir, run_name)
+    trackio.log_artifact(adapter_dir, name=f"{run_name}-adapter", type="model")
+    trackio.finish()
 
 
 if __name__ == "__main__":

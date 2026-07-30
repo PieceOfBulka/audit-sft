@@ -56,3 +56,4 @@ wheel>=0.42.0
 
 # --- утилиты проекта ---
 python-dotenv
+trackio  # локальный трекер экспериментов (обучение + bertscore + llm-as-judge в одном run)

@@ -9,3 +9,4 @@ mlx-lm[train]
 openai
 dotenv
 unsloth
+trackio
