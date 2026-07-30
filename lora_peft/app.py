@@ -23,6 +23,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gradio as gr
 import torch
+from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
 from peft import PeftModel
@@ -31,6 +32,12 @@ from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                TRACKIO_PROJECT, list_available_adapters,
                                list_available_models, pick_device,
                                resolve_model_dir)
+
+# Без этого OPENAI_TOKEN/INTERNAL_API_TOKEN из .env не попадают в os.environ
+# этого процесса, и launch_judge() ниже всегда читал бы дефолт "not-needed" —
+# .env читается только дочерним llm_as_judge.py, а ключ для CLI-аргумента
+# --openai-api-key нужен уже здесь, в родительском процессе.
+load_dotenv()
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEVICE = pick_device()
