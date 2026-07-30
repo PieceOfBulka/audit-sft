@@ -385,10 +385,14 @@ _TRACKIO_STATE: dict[str, str | None] = {"url": None}
 def open_trackio_dashboard():
     if _TRACKIO_STATE["url"] is None:
         import trackio
-        _app, url, _share_url = trackio.show(
+        # trackio.show() возвращает (server, local_url, share_url, full_url) —
+        # full_url несёт write_token (даёт право писать/удалять run'ы), поэтому
+        # для просмотра в iframe берём local_url без токена записи.
+        _server, local_url, _share_url, _full_url = trackio.show(
             project=TRACKIO_PROJECT, open_browser=False, block_thread=False,
         )
-        _TRACKIO_STATE["url"] = url
+        base = local_url.rstrip("/")
+        _TRACKIO_STATE["url"] = f"{base}/?project={TRACKIO_PROJECT}"
     url = _TRACKIO_STATE["url"]
     html = (f'<iframe src="{url}" style="width:100%; height:80vh; border:none;"></iframe>'
            f'<p>Если дашборд не открылся во фрейме — <a href="{url}" target="_blank">открыть в новой вкладке</a>.</p>')
