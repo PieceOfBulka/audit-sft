@@ -221,9 +221,9 @@ def build_chat_tab():
         compare_mode = gr.Checkbox(label="Режим сравнения (база vs адаптер, split-screen)", value=False)
 
         with gr.Row(visible=False) as compare_row:
-            cb_base = gr.Chatbot(label="⬅️ Базовая модель (без адаптера)", type="messages", height=460)
-            cb_adapter = gr.Chatbot(label="➡️ С LoRA-адаптером", type="messages", height=460)
-        cb_single = gr.Chatbot(label="Чат", type="messages", height=460)
+            cb_base = gr.Chatbot(label="⬅️ Базовая модель (без адаптера)", height=460)
+            cb_adapter = gr.Chatbot(label="➡️ С LoRA-адаптером", height=460)
+        cb_single = gr.Chatbot(label="Чат", height=460)
 
         msg = gr.Textbox(placeholder="Введите вопрос…", label="Вопрос", lines=2)
         with gr.Row():
