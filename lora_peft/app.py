@@ -37,6 +37,7 @@ DEVICE = pick_device()
 NO_ADAPTER = "— без адаптера —"
 SAFETY_MAX_NEW_TOKENS = 4096
 DEFAULT_SYSTEM_PROMPT = DOMAIN_SYSTEM_PROMPTS.get("audit", "Отвечай на русском.")
+CUSTOM_PROMPT_LABEL = "— свой промпт —"
 
 
 def _torch_dtype_for(device: str):
@@ -217,7 +218,12 @@ def build_chat_tab():
             load_btn = gr.Button("📥 Загрузить модель", variant="primary")
             status_box = gr.Textbox(label="Статус", value="Модель не загружена.", interactive=False)
 
-        system_box = gr.Textbox(label="Системный промпт", value=DEFAULT_SYSTEM_PROMPT, lines=2)
+        with gr.Row():
+            system_preset_dd = gr.Dropdown(choices=[CUSTOM_PROMPT_LABEL] + sorted(DOMAIN_SYSTEM_PROMPTS),
+                                           value="audit" if "audit" in DOMAIN_SYSTEM_PROMPTS else CUSTOM_PROMPT_LABEL,
+                                           label="Системный промпт: пресет")
+        system_box = gr.Textbox(label="Системный промпт (можно править после выбора пресета)",
+                                value=DEFAULT_SYSTEM_PROMPT, lines=3)
         compare_mode = gr.Checkbox(label="Режим сравнения (база vs адаптер, split-screen)", value=False)
 
         with gr.Row(visible=False) as compare_row:
@@ -235,6 +241,13 @@ def build_chat_tab():
         load_btn.click(load_model_ui, [model_dd, adapter_dd], status_box)
         compare_mode.change(lambda v: (gr.update(visible=v), gr.update(visible=not v)),
                             compare_mode, [compare_row, cb_single])
+
+        def apply_preset(preset):
+            if preset == CUSTOM_PROMPT_LABEL:
+                return gr.update()  # оставить текущий текст как есть — свой промпт
+            return gr.update(value=DOMAIN_SYSTEM_PROMPTS[preset])
+
+        system_preset_dd.change(apply_preset, system_preset_dd, system_box)
 
         def route_send(message, h_single, h_base, h_adapter, system_prompt, max_new_tokens, compare):
             if compare:
