@@ -113,7 +113,11 @@ def main():
 
     run_label = args.adapter_name or args.domain or os.path.basename(adapter_dir)
     run_name = build_run_name(run_label, args.model, args.rank, args.alpha, args.lr)
-    trackio.init(project=TRACKIO_PROJECT, name=run_name, config=vars(args))
+    # Не вызываем trackio.init() тут вручную: Trainer с report_to="trackio"
+    # сам создаёт run через TrackioCallback (используя project=/run_name= из
+    # TrainingArguments ниже) и сам закрывает его в on_train_end. Ручной init
+    # здесь создавал ВТОРОЙ, лишний run, а к моменту log_artifact() ниже
+    # run уже был закрыт колбэком — оттуда и "Call trackio.init() before...".
 
     print(f"== device={device} | model={model_dir} | dataset={dataset_path}")
     print(f"== LoRA: rank={args.rank} alpha={args.alpha} dropout={args.lora_dropout} "
@@ -169,6 +173,8 @@ def main():
         metric_for_best_model="eval_loss" if args.load_best_model_at_end else None,
         optim="adamw_8bit",
         report_to="trackio",
+        project=TRACKIO_PROJECT,
+        run_name=run_name,
         dataloader_pin_memory=(device == "cuda"),
     )
 
@@ -192,6 +198,11 @@ def main():
     # Метаданные run'а — чтобы evaluate.py/llm_as_judge.py дописывали метрики
     # оценки (bertscore, judge, время) в тот же Trackio-run, не заводя новый.
     save_run_meta(adapter_dir, run_name)
+
+    # TrackioCallback уже закрыл run в on_train_end — переоткрываем его же
+    # (resume="must": ошибка, если вдруг run с таким именем не найден, а не
+    # тихое создание нового) только чтобы приложить адаптер как artifact.
+    trackio.init(project=TRACKIO_PROJECT, name=run_name, resume="must")
     trackio.log_artifact(adapter_dir, name=f"{run_name}-adapter", type="model")
     trackio.finish()
 
