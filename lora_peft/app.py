@@ -418,9 +418,9 @@ JUDGE_BACKENDS = {
         "model": "gpt-5-nano",
         "api_key_env": "OPENAI_TOKEN",
     },
-    "Внутренний сервер (minimax/minimax-m3)": {
+    "Внутренний сервер (minimax-m3)": {
         "base_url": "http://10.246.6.82:8080/v1",
-        "model": "minimax/minimax-m3",
+        "model": "minimax-m3",
         "api_key_env": "INTERNAL_API_TOKEN",
     },
 }

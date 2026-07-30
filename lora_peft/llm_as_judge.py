@@ -69,9 +69,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--openai-api-key", default=os.getenv("OPENAI_TOKEN", "not-needed"),
                    help="API-ключ. Внутренние серверы обычно его не проверяют")
     p.add_argument("--question-model", default=os.getenv("QUESTION_MODEL_NAME", "gpt-5-nano"),
-                   help="Модель для генерации вопроса, например minimax/minimax-m3")
+                   help="Модель для генерации вопроса, например minimax-m3")
     p.add_argument("--judge-model", default=os.getenv("JUDGE_MODEL_NAME", "gpt-5-nano"),
-                   help="Модель-судья, например minimax/minimax-m3")
+                   help="Модель-судья, например minimax-m3")
 
     # --- запуск без интерактива (для UI/скриптов) ---
     p.add_argument("--iterations", type=int, default=None,
