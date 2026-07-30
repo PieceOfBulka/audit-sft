@@ -7,27 +7,32 @@
 
 Примеры запуска (из корня репозитория):
 
-    python lora_peft/evaluate.py --domain zakupki --model Qwen/Qwen3-8B \\
+    python lora_peft/bertscore.py --domain zakupki --model Qwen/Qwen3-8B \\
         --adapter ./lora-adapter/zakupki --num 50
 
-    python lora_peft/evaluate.py --domain zakupki --model Qwen/Qwen3-8B --base-only
+    python lora_peft/bertscore.py --domain zakupki --model Qwen/Qwen3-8B --base-only
 
 Результаты по умолчанию сохраняются в bertscores/<модель>_<датасет>.json
 (например bertscores/Qwen_Qwen3-8B_zakupki.json); переопределить путь можно
-через --out, либо только каталог через --out-dir.
+через --out, либо только каталог через --out-dir. Если рядом с адаптером есть
+trackio_run.json (создаётся finetune.py) — метрики и время дописываются в тот
+же Trackio-run, что и обучение.
 """
 import argparse
 import json
 import os
 import sys
+import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
+import trackio
 
 from load_dataset import load_train_eval_dataset
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
-                               build_user_content, pick_device, resolve_model_dir)
+                               build_user_content, load_run_meta, pick_device,
+                               resolve_model_dir, slug)
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,13 +63,9 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _slug(text: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)
-
-
 def default_out_path(out_dir: str, model_name: str, dataset_label: str, adapter_path: str) -> str:
-    filename = f"{_slug(model_name)}_{_slug(dataset_label)}"
-    filename += f"_{_slug(adapter_path)}" if adapter_path else "_base"
+    filename = f"{slug(model_name)}_{slug(dataset_label)}"
+    filename += f"_{slug(adapter_path)}" if adapter_path else "_base"
     filename += ".json"
     return os.path.join(out_dir, filename)
 
@@ -185,6 +186,7 @@ def main():
 
     preds, refs, questions = [], [], []
     examples = list(subset)
+    gen_start = time.perf_counter()
     for start in range(0, len(examples), args.batch_size):
         batch = examples[start:start + args.batch_size]
         batch_preds = generate_batch(model, tokenizer, system_prompt, batch, device,
@@ -193,13 +195,17 @@ def main():
         refs.extend(ex["answer"] for ex in batch)
         questions.extend(ex["question"] for ex in batch)
         print(f"  [{min(start + args.batch_size, n)}/{n}] сгенерирован батч ({len(batch)} примеров)")
+    generation_time = time.perf_counter() - gen_start
 
     from bert_score import score as bertscore
     print("== считаем BERTScore (первый запуск скачает модель эмбеддингов)...")
+    bertscore_start = time.perf_counter()
     bs_kwargs = {"lang": args.lang}
     if args.bertscore_model:
         bs_kwargs = {"model_type": args.bertscore_model}
     P, R, F1 = bertscore(preds, refs, verbose=True, **bs_kwargs)
+    bertscore_time = time.perf_counter() - bertscore_start
+    total_eval_time = generation_time + bertscore_time
 
     result = {
         "num_samples": n,
@@ -209,11 +215,17 @@ def main():
         "precision": round(P.mean().item(), 4),
         "recall": round(R.mean().item(), 4),
         "f1": round(F1.mean().item(), 4),
+        "generation_time_sec": round(generation_time, 1),
+        "bertscore_time_sec": round(bertscore_time, 1),
+        "total_eval_time_sec": round(total_eval_time, 1),
+        "sec_per_example": round(generation_time / n, 2) if n else 0.0,
     }
     print("\n=== BERTScore ===")
     print(f"  Precision: {result['precision']}")
     print(f"  Recall:    {result['recall']}")
     print(f"  F1:        {result['f1']}")
+    print(f"  Время генерации: {generation_time:.1f} с | BERTScore: {bertscore_time:.1f} с "
+          f"| итого: {total_eval_time:.1f} с ({result['sec_per_example']:.2f} с/пример)")
 
     per_example = [
         {"question": q, "f1": round(f.item(), 4), "prediction": p, "reference": r}
@@ -222,6 +234,25 @@ def main():
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump({"summary": result, "examples": per_example}, fh, ensure_ascii=False, indent=2)
     print(f"\n== подробные результаты сохранены в {out_path}")
+
+    if not args.base_only:
+        run_meta = load_run_meta(args.adapter)
+        if run_meta:
+            trackio.init(project=run_meta["project"], name=run_meta["run_name"], resume="must")
+            trackio.log({
+                "bertscore_precision": result["precision"],
+                "bertscore_recall": result["recall"],
+                "bertscore_f1": result["f1"],
+                "bertscore_generation_time_sec": result["generation_time_sec"],
+                "bertscore_time_sec": result["bertscore_time_sec"],
+                "bertscore_total_eval_time_sec": result["total_eval_time_sec"],
+                "bertscore_sec_per_example": result["sec_per_example"],
+            })
+            trackio.finish()
+            print(f"== метрики дописаны в Trackio-run '{run_meta['run_name']}'")
+        else:
+            print(f"== {os.path.join(args.adapter, 'trackio_run.json')} не найден — "
+                  "пропускаю логирование в Trackio (адаптер обучен без finetune.py?)")
 
 
 if __name__ == "__main__":
