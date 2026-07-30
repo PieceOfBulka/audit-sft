@@ -379,23 +379,35 @@ def build_train_tab():
 # Вкладка 3: Trackio
 # =====================================================================
 
-_TRACKIO_STATE: dict[str, str | None] = {"url": None}
+_TRACKIO_STATE: dict[str, int | None] = {"port": None}
 
 
-def open_trackio_dashboard():
-    if _TRACKIO_STATE["url"] is None:
+def open_trackio_dashboard(request: gr.Request):
+    import urllib.parse
+
+    if _TRACKIO_STATE["port"] is None:
         import trackio
-        # trackio.show() возвращает (server, local_url, share_url, full_url) —
-        # full_url несёт write_token (даёт право писать/удалять run'ы), поэтому
-        # для просмотра в iframe берём local_url без токена записи.
+        # host="0.0.0.0" — иначе Trackio слушает только 127.0.0.1 и снаружи
+        # (с другой машины) до него не достучаться, даже если основной
+        # app.py открыт на 0.0.0.0. Возвращает (server, local_url,
+        # share_url, full_url); full_url несёт write_token (право
+        # писать/удалять run'ы) — для просмотра в iframe он не нужен.
         _server, local_url, _share_url, _full_url = trackio.show(
             project=TRACKIO_PROJECT, open_browser=False, block_thread=False,
+            host="0.0.0.0",
         )
-        base = local_url.rstrip("/")
-        _TRACKIO_STATE["url"] = f"{base}/?project={TRACKIO_PROJECT}"
-    url = _TRACKIO_STATE["url"]
+        _TRACKIO_STATE["port"] = urllib.parse.urlparse(local_url).port
+
+    # Хост берём из заголовка запроса, которым реально открыли app.py в
+    # браузере (например IP сервера), а не 127.0.0.1 из local_url — иначе
+    # с удалённого ноутбука iframe будет стучаться в свой собственный localhost.
+    browser_host = request.headers.get("host", "127.0.0.1:7860").split(":")[0]
+    url = f"http://{browser_host}:{_TRACKIO_STATE['port']}/?project={TRACKIO_PROJECT}"
+
     html = (f'<iframe src="{url}" style="width:100%; height:80vh; border:none;"></iframe>'
-           f'<p>Если дашборд не открылся во фрейме — <a href="{url}" target="_blank">открыть в новой вкладке</a>.</p>')
+           f'<p>Если дашборд не открылся во фрейме — <a href="{url}" target="_blank">открыть в новой вкладке</a>. '
+           f'Если не открывается вообще — проверь, что порт {_TRACKIO_STATE["port"]} '
+           f'разрешён в firewall сервера (как и {7860}).</p>')
     return html
 
 
