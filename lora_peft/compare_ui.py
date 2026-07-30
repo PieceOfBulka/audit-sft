@@ -25,6 +25,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 
 from peft import PeftModel
 from sft_lora_peft import MODEL_DIR, pick_device, torch_dtype
+from common import silence_max_length_warning
 
 ADAPTER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lora-adapter")
 
@@ -47,6 +48,7 @@ base = AutoModelForCausalLM.from_pretrained(MODEL_DIR, dtype=torch_dtype, low_cp
 model = PeftModel.from_pretrained(base, ADAPTER_DIR)
 model.to(device)
 model.eval()
+silence_max_length_warning(model)
 print("== модель + LoRA-адаптер готовы")
 
 

@@ -32,7 +32,7 @@ import trackio
 from load_dataset import load_train_eval_dataset
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                build_user_content, load_run_meta, pick_device,
-                               resolve_model_dir, slug)
+                               resolve_model_dir, silence_max_length_warning, slug)
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,6 +93,7 @@ def load_model(args, model_dir, device):
                 print("== Оценка базовой модели без адаптера (baseline, Unsloth backend)")
 
             FastLanguageModel.for_inference(model)  # переключает модель в быстрый inference-режим
+            silence_max_length_warning(model)
 
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
@@ -125,6 +126,7 @@ def load_model(args, model_dir, device):
 
     model.to(device)
     model.eval()
+    silence_max_length_warning(model)
     return model, tokenizer
 
 

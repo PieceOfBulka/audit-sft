@@ -31,7 +31,7 @@ from peft import PeftModel
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                TRACKIO_PROJECT, list_available_adapters,
                                list_available_models, pick_device,
-                               resolve_model_dir)
+                               resolve_model_dir, silence_max_length_warning)
 
 # Без этого OPENAI_TOKEN/INTERNAL_API_TOKEN из .env не попадают в os.environ
 # этого процесса, и launch_judge() ниже всегда читал бы дефолт "not-needed" —
@@ -95,6 +95,7 @@ class LoadedModel:
             model = PeftModel.from_pretrained(model, adapter_path)
         model.to(DEVICE)
         model.eval()
+        silence_max_length_warning(model)
 
         self.model = model
         self.tokenizer = tokenizer

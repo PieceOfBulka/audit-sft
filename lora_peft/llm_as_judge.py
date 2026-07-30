@@ -15,7 +15,7 @@ import trackio
 
 from lora_peft.sft_lora_peft import pick_device, torch_dtype
 from lora_peft.common import (DOMAIN_JUDGE, DOMAIN_QUESTIONS, DOMAIN_SYSTEM_PROMPTS,
-                               load_run_meta, slug)
+                               load_run_meta, silence_max_length_warning, slug)
 
 load_dotenv()
 
@@ -109,6 +109,7 @@ def load_model(use_lora: bool, model_path: str, adapter_path: str, device: str):
 
     model.to(device)
     model.eval()
+    silence_max_length_warning(model)
     return model, tokenizer
 
 @torch.no_grad()

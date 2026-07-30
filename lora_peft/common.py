@@ -29,6 +29,17 @@ def pick_device() -> str:
     return "cpu"
 
 
+def silence_max_length_warning(model) -> None:
+    """Модели вроде Qwen несут в generation_config.json устаревший max_length
+    (общий лимит на весь контекст, не на новые токены) вместе с современным
+    max_new_tokens. Раз мы всегда передаём max_new_tokens явно в generate(),
+    он и так имеет приоритет — но transformers всё равно печатает
+    предупреждение на каждый вызов. Обнуляем max_length один раз при
+    загрузке модели: семантически ничего не меняется, просто убирает шум в логе."""
+    if getattr(model.generation_config, "max_length", None) is not None:
+        model.generation_config.max_length = None
+
+
 def slug(text: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)
 
