@@ -15,7 +15,6 @@ import contextlib
 import glob
 import json
 import os
-import random
 import subprocess
 import sys
 import threading
@@ -446,15 +445,13 @@ def launch_judge(model_id, adapter_path, dataset_choice, base_only, backend_name
     backend = JUDGE_BACKENDS[backend_name]
     api_key = os.environ.get(backend["api_key_env"], "not-needed")
 
-    # --shuffle + свежий seed на каждый запуск -> каждый прогон из UI берёт
-    # случайные N примеров из test-сплита, а не одни и те же первые N.
-    seed = random.randint(0, 2**31 - 1)
-
+    # Без --shuffle: всегда одни и те же первые N примеров test-сплита (порядок
+    # самого test-сплита уже детерминирован фиксированным seed в load_dataset.py),
+    # чтобы разные модели/адаптеры можно было честно сравнивать по одинаковым данным.
     cmd = [sys.executable, os.path.join(_ROOT, "lora_peft", "llm_as_judge.py"),
            "--model", resolve_model_dir(model_id), "--domain", dataset_choice,
            "--judge-model", backend["model"],
-           "--openai-api-key", api_key, "--iterations", str(iterations),
-           "--shuffle", "--seed", str(seed)]
+           "--openai-api-key", api_key, "--iterations", str(iterations)]
     if backend["base_url"]:
         cmd += ["--openai-base-url", backend["base_url"]]
     if not base_only and adapter_path and adapter_path != NO_ADAPTER:
