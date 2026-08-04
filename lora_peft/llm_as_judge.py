@@ -190,24 +190,20 @@ def generate_judgement(client: OpenAI, model: str, question: str, reference_answ
         model=model,
         messages=[
             {
-                'role': 'user',
-                'content': f"Вопрос:\n{question}\n\nЭталонный ответ:\n{reference_answer}"
-            },
-            {
-                'role': 'assistant',
-                'content': reply
-            },
-            {
                 'role': 'system',
                 'content': judge_prompt
+            },
+            {
+                'role': 'user',
+                'content': f"Вопрос:\n{question}\n\nЭталонный ответ:\n{reference_answer}\n\nОтвет модели:\n{reply}"
             }
         ],
-        extra_body={
-            "chat_template_kwargs": {
-                "enable_thinking": False
-            },
-            "guided_json": Judgement.model_json_schema()
-        }
+        # extra_body={
+        #     "chat_template_kwargs": {
+        #         "enable_thinking": False
+        #     },
+        #     "guided_json": Judgement.model_json_schema()
+        # }
     )
 
     return judgement_generation.choices[0].message.content
