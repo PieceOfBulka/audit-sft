@@ -294,6 +294,8 @@ def main():
     faithfulness_scores: list[float] = []
     completeness_scores: list[float] = []
     consciousness_scores: list[float] = []
+    reply_times: list[float] = []
+    judge_times: list[float] = []
     entries: list[str] = []  # готовые блоки по каждому примеру -> пишем в файл одним махом
     try:
         for example in test:
@@ -332,15 +334,14 @@ def main():
             faithfulness_scores.append(faithfulness)
             completeness_scores.append(completeness)
             consciousness_scores.append(consciousness)
+            reply_times.append(reply_time)
+            judge_times.append(judge_time)
 
-            if run_meta:
-                trackio.log({
-                    "judge_faithfulness": faithfulness,
-                    "judge_completeness": completeness,
-                    "judge_consciousness": consciousness,
-                    "judge_reply_time_sec": round(reply_time, 1),
-                    "judge_eval_time_sec": round(judge_time, 1),
-                }, step=iteration)
+            # Пошагового trackio.log(..., step=iteration) больше нет: как и
+            # bertscore.py, логируем ОДИН раз в конце — усреднённые метрики за
+            # весь прогон, одной точкой на run. Пошаговое логирование заставляло
+            # дашборд рисовать это как линию по step, а не как столбики,
+            # сравнимые между run'ами (как bertscore-графики).
 
             entries.append(
                 '\n==============' +
@@ -381,13 +382,17 @@ def main():
                 f.write(''.join(entries))
 
             if run_meta:
-                # Те же имена метрик, что у bertscore.py (bertscore_f1 и т.д.) —
-                # средние за весь прогон, одним значением на run, а не по шагам.
+                # Тот же паттерн, что у bertscore.py: один trackio.log() без
+                # step, средние за весь прогон одним значением на run — тогда
+                # дашборд рисует это столбиками (сравнение между run'ами),
+                # а не линией по шагам.
                 trackio.log({
                     "judge_faithfulness_avg": round(avg_faithfulness, 3),
                     "judge_completeness_avg": round(avg_completeness, 3),
                     "judge_consciousness_avg": round(avg_consciousness, 3),
                     "judge_num_samples": n,
+                    "judge_reply_time_avg_sec": round(sum(reply_times) / n, 2),
+                    "judge_eval_time_avg_sec": round(sum(judge_times) / n, 2),
                 })
 
         if run_meta:
