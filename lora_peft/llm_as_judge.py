@@ -185,7 +185,15 @@ def generate_reply(
 def generate_judgement(client: OpenAI, model: str, question: str, reference_answer: str,
                        reply: str, judge_prompt: str):
     """Судья сравнивает reply с reference_answer (реальным ответом из test-сплита
-    датасета) — без этого faithfulness была бы неверифицируемой (не с чем сверять)."""
+    датасета) — без этого faithfulness была бы неверифицируемой (не с чем сверять).
+
+    system-инструкция идёт ПЕРВЫМ сообщением, а весь оцениваемый материал — ОДНИМ
+    user-сообщением, без роли assistant. Раньше reply вставлялся отдельным
+    assistant-сообщением в конце списка (после system) — на open-weight чат-шаблонах
+    (например minimax-m3 через vLLM/SGLang) это заставляло модель ПРОДОЛЖАТЬ чужую
+    реплику вместо генерации новой оценки (сообщение с ролью assistant в конце истории
+    воспринимается как недописанный ход, а не как данные для анализа), из-за чего судья
+    возвращал очередной ответ на исходный вопрос вместо JSON-оценки."""
     judgement_generation = client.chat.completions.create(
         model=model,
         messages=[
@@ -195,8 +203,12 @@ def generate_judgement(client: OpenAI, model: str, question: str, reference_answ
             },
             {
                 'role': 'user',
-                'content': f"Вопрос:\n{question}\n\nЭталонный ответ:\n{reference_answer}\n\nОтвет модели:\n{reply}"
-            }
+                'content': (
+                    f"Вопрос:\n{question}\n\n"
+                    f"Эталонный ответ:\n{reference_answer}\n\n"
+                    f"Ответ тестируемого:\n{reply}"
+                )
+            },
         ],
         # extra_body={
         #     "chat_template_kwargs": {
@@ -279,6 +291,10 @@ def main():
 
     print('===Начало цикла llm-as-judge\n')
     iteration = 0
+    faithfulness_scores: list[float] = []
+    completeness_scores: list[float] = []
+    consciousness_scores: list[float] = []
+    entries: list[str] = []  # готовые блоки по каждому примеру -> пишем в файл одним махом
     try:
         for example in test:
             iteration += 1
@@ -313,6 +329,10 @@ def main():
             consciousness = judge_dict.get("consciousness_score", 0)
             print(f'=Оценка судьи ({judge_time:.1f} с):\n{json.dumps(judge_dict,indent=2,ensure_ascii=False)}')
 
+            faithfulness_scores.append(faithfulness)
+            completeness_scores.append(completeness)
+            consciousness_scores.append(consciousness)
+
             if run_meta:
                 trackio.log({
                     "judge_faithfulness": faithfulness,
@@ -322,22 +342,54 @@ def main():
                     "judge_eval_time_sec": round(judge_time, 1),
                 }, step=iteration)
 
-            with open(result_file, 'a', encoding='utf-8') as f:
-                f.write('\n==============')
-                f.write(f'\n\n==Question\n{question}')
-                f.write(f'\n\n==Reference answer\n{reference_answer}')
-                f.write(f'\n\n==Reply ({reply_time:.1f} с)\n{reply}')
-                f.write(f'\n\n==Judgement ({judge_time:.1f} с)\n')
-                f.write(f'- faithfulness = {faithfulness}\n')
-                f.write(f'- completeness = {completeness}\n')
-                f.write(f'- consciousness = {consciousness}\n')
-                f.write(f'- Reasoning\n{reasoning}\n')
+            entries.append(
+                '\n==============' +
+                f'\n\n==Question\n{question}' +
+                f'\n\n==Reference answer\n{reference_answer}' +
+                f'\n\n==Reply ({reply_time:.1f} с)\n{reply}' +
+                f'\n\n==Judgement ({judge_time:.1f} с)\n' +
+                f'- faithfulness = {faithfulness}\n' +
+                f'- completeness = {completeness}\n' +
+                f'- consciousness = {consciousness}\n' +
+                f'- Reasoning\n{reasoning}\n'
+            )
 
             if args.iterations is None:
                 is_continue = input('\n====Продолжаем? (y/n): ')
                 if is_continue != 'y':
                     break
     finally:
+        n = len(faithfulness_scores)
+        if n:
+            avg_faithfulness = sum(faithfulness_scores) / n
+            avg_completeness = sum(completeness_scores) / n
+            avg_consciousness = sum(consciousness_scores) / n
+
+            summary = (
+                f"=== СРЕДНИЕ ОЦЕНКИ (n={n} примеров) ===\n"
+                f"- faithfulness  = {avg_faithfulness:.2f}\n"
+                f"- completeness  = {avg_completeness:.2f}\n"
+                f"- consciousness = {avg_consciousness:.2f}\n"
+            )
+            print(f'\n{summary}')
+
+            # Сводка пишется ДО всех отдельных оценок этого прогона.
+            with open(result_file, 'a', encoding='utf-8') as f:
+                f.write('\n' + '#' * 60 + '\n')
+                f.write(summary)
+                f.write('#' * 60 + '\n')
+                f.write(''.join(entries))
+
+            if run_meta:
+                # Те же имена метрик, что у bertscore.py (bertscore_f1 и т.д.) —
+                # средние за весь прогон, одним значением на run, а не по шагам.
+                trackio.log({
+                    "judge_faithfulness_avg": round(avg_faithfulness, 3),
+                    "judge_completeness_avg": round(avg_completeness, 3),
+                    "judge_consciousness_avg": round(avg_consciousness, 3),
+                    "judge_num_samples": n,
+                })
+
         if run_meta:
             if os.path.isfile(result_file):
                 trackio.log_artifact(result_file, name=f"{run_meta['run_name']}-judge-report",

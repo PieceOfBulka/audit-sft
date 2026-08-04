@@ -11,3 +11,4 @@ dotenv
 unsloth
 trackio
 nvidia-ml-py  # даёт Trackio auto_log_gpu на CUDA; на Mac просто не найдёт GPU, безвредно
+pydantic      # lora_peft/common.py::Judgement
