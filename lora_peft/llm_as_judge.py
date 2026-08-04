@@ -202,7 +202,11 @@ def generate_judgement(client: OpenAI, model: str, question: str, reference_answ
                 'content': judge_prompt
             }
         ],
-        response_format={ "type": "json_object" }
+        extra_body={
+            "chat_template_kwargs": {
+                "enable_thinking": False
+            }
+        }
     )
 
     return judgement_generation.choices[0].message.content
