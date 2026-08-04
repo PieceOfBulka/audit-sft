@@ -337,11 +337,16 @@ def main():
             reply_times.append(reply_time)
             judge_times.append(judge_time)
 
-            # Пошагового trackio.log(..., step=iteration) больше нет: как и
-            # bertscore.py, логируем ОДИН раз в конце — усреднённые метрики за
-            # весь прогон, одной точкой на run. Пошаговое логирование заставляло
-            # дашборд рисовать это как линию по step, а не как столбики,
-            # сравнимые между run'ами (как bertscore-графики).
+            if run_meta:
+                # Построчные оценки — как менялась оценка от примера к примеру
+                # внутри ЭТОГО прогона (не путать с judge_*_avg ниже — та метрика
+                # для сравнения МЕЖДУ моделями/run'ами, эта — для просмотра
+                # разброса ВНУТРИ одного прогона).
+                trackio.log({
+                    "judge_faithfulness": faithfulness,
+                    "judge_completeness": completeness,
+                    "judge_consciousness": consciousness,
+                }, step=iteration)
 
             entries.append(
                 '\n==============' +
@@ -382,10 +387,15 @@ def main():
                 f.write(''.join(entries))
 
             if run_meta:
-                # Тот же паттерн, что у bertscore.py: один trackio.log() без
-                # step, средние за весь прогон одним значением на run — тогда
-                # дашборд рисует это столбиками (сравнение между run'ами),
-                # а не линией по шагам.
+                # step=0 ЖЁСТКО, а не "трекио сам разберётся": Run.log() без
+                # явного step берёт self._next_step, который при resume="must"
+                # продолжается с максимума, уже сохранённого в БД для этого run'а
+                # (см. trackio/run.py: self._next_step = 0 if max_step is None
+                # else max_step + 1). Значит при повторном запуске судьи на том
+                # же адаптере среднее каждый раз улетало бы на новый, всё больший
+                # step — и дашборд рисовал бы через несколько запусков линию
+                # вместо одного столбика. Фиксируя step=0, все перезапуски
+                # сравнения одного и того же run'а остаются в одной точке.
                 trackio.log({
                     "judge_faithfulness_avg": round(avg_faithfulness, 3),
                     "judge_completeness_avg": round(avg_completeness, 3),
@@ -393,7 +403,7 @@ def main():
                     "judge_num_samples": n,
                     "judge_reply_time_avg_sec": round(sum(reply_times) / n, 2),
                     "judge_eval_time_avg_sec": round(sum(judge_times) / n, 2),
-                })
+                }, step=0)
 
         if run_meta:
             if os.path.isfile(result_file):
