@@ -10,6 +10,7 @@ import time
 
 import torch
 from transformers import TrainerCallback, TrainingArguments
+from pydantic import BaseModel
 
 # Единый проект Trackio для всех LoRA-экспериментов — так все run'ы видны
 # рядом в одном дашборде вне зависимости от домена/модели.
@@ -299,3 +300,10 @@ DOMAIN_JUDGE = {
 }
 DOMAIN_JUDGE["easydataset"] = DOMAIN_JUDGE["zakupki"]
 DOMAIN_JUDGE["zakupki5500"] = DOMAIN_JUDGE["zakupki"]
+
+
+class Judgement(BaseModel):
+    faithfulness_score: int
+    consciousness_score: int
+    completeness_score: int
+    reasoning: str

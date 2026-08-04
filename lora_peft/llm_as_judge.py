@@ -14,7 +14,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import trackio
 
 from lora_peft.sft_lora_peft import pick_device, torch_dtype
-from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_JUDGE, DOMAIN_SYSTEM_PROMPTS,
+from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_JUDGE, DOMAIN_SYSTEM_PROMPTS, Judgement,
                                build_user_content, load_run_meta,
                                silence_max_length_warning, slug)
 from load_dataset import load_train_eval_dataset
@@ -205,7 +205,8 @@ def generate_judgement(client: OpenAI, model: str, question: str, reference_answ
         extra_body={
             "chat_template_kwargs": {
                 "enable_thinking": False
-            }
+            },
+            "guided_json": Judgement.model_json_schema()
         }
     )
 
