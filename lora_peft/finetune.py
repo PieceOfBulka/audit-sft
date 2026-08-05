@@ -28,6 +28,7 @@ from unsloth import FastLanguageModel  # должен импортировать
 
 import torch
 from transformers import DataCollatorForSeq2Seq, Trainer
+from dotenv import load_dotenv
 
 import mlflow
 
@@ -37,6 +38,11 @@ from lora_peft.common import (MLFLOW_EXPERIMENT, DOMAIN_DATASETS, DOMAIN_SYSTEM_
                                build_training_arguments, make_tokenize_fn,
                                pick_device, resolve_model_dir,
                                save_run_meta, slug)
+
+# Без этого MLFLOW_TRACKING_URI из .env не попадает в os.environ при прямом
+# запуске `python lora_peft/finetune.py` (через app.py сработало бы само,
+# т.к. app.py грузит .env и передаёт своё окружение в subprocess).
+load_dotenv()
 
 
 def parse_args() -> argparse.Namespace:

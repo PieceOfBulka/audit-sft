@@ -27,6 +27,7 @@ import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
+from dotenv import load_dotenv
 import mlflow
 
 from load_dataset import load_train_eval_dataset
@@ -34,6 +35,10 @@ from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                build_user_content, load_run_meta, pick_device,
                                resolve_model_dir,
                                silence_max_length_warning, slug)
+
+# Без этого MLFLOW_TRACKING_URI из .env не попадает в os.environ при прямом
+# запуске `python lora_peft/bertscore.py` (см. finetune.py).
+load_dotenv()
 
 
 def parse_args() -> argparse.Namespace:
