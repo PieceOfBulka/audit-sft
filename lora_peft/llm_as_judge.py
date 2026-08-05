@@ -1,9 +1,11 @@
 import argparse
 import os
+import sqlite3
 import sys
 import time
 import torch
 import json
+from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -247,6 +249,65 @@ def parse_judge_json(raw: str) -> dict:
         }
 
 
+def _trackio_db_path(project: str) -> Path:
+    trackio_dir = os.environ.get("TRACKIO_DIR")
+    if trackio_dir:
+        base = Path(trackio_dir)
+    else:
+        hf_home = os.environ.get("HF_HOME") or str(Path.home() / ".cache" / "huggingface")
+        base = Path(hf_home) / "trackio"
+    return base / f"{project}.db"
+
+
+def should_log_judge_avg(project: str, run_name: str, n: int) -> bool:
+    """Судью на одном и том же адаптере часто гоняют по нескольку раз — при
+    каждом запуске trackio.log() добавляет НОВУЮ строку среднего, и вместо
+    одного столбика на графике накапливается россыпь/линия точек за разные
+    прогоны. Вместо слепой перезаписи сравниваем по числу примеров (n):
+    прогон с БОЛЬШИМ n статистически надёжнее, поэтому именно он должен
+    остаться единственным. Если у уже залогированного среднего примеров
+    больше или столько же — новую (менее значимую) точку не пишем вообще.
+    Если меньше — удаляем старые строки и разрешаем запись новой."""
+    db_path = _trackio_db_path(project)
+    if not db_path.is_file():
+        return True  # ещё ничего не залогировано -> писать можно
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, metrics FROM metrics WHERE run_name = ? AND metrics LIKE '%judge_faithfulness_avg%'",
+            (run_name,),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return True
+
+        max_prev_n = 0
+        row_ids = []
+        for row_id, metrics_json in rows:
+            row_ids.append(row_id)
+            try:
+                data = json.loads(metrics_json)
+            except json.JSONDecodeError:
+                continue
+            max_prev_n = max(max_prev_n, data.get("judge_num_samples", 0))
+
+        if max_prev_n >= n:
+            print(f"== пропускаю запись среднего в Trackio: у уже сохранённого прогона "
+                  f"{max_prev_n} примеров (>= {n} у текущего) — оставляю более статистически "
+                  "значимый результат нетронутым")
+            return False
+
+        cur.executemany("DELETE FROM metrics WHERE id = ?", [(i,) for i in row_ids])
+        conn.commit()
+        print(f"== удалил {len(row_ids)} старых строк среднего в Trackio (было {max_prev_n} "
+              f"примеров, у нового прогона {n} — записываю новое)")
+        return True
+    finally:
+        conn.close()
+
+
 def main():
     args = parse_args()
     device = pick_device()
@@ -386,7 +447,7 @@ def main():
                 f.write('#' * 60 + '\n')
                 f.write(''.join(entries))
 
-            if run_meta:
+            if run_meta and should_log_judge_avg(run_meta["project"], run_meta["run_name"], n):
                 # step=0 ЖЁСТКО, а не "трекио сам разберётся": Run.log() без
                 # явного step берёт self._next_step, который при resume="must"
                 # продолжается с максимума, уже сохранённого в БД для этого run'а
@@ -394,8 +455,10 @@ def main():
                 # else max_step + 1). Значит при повторном запуске судьи на том
                 # же адаптере среднее каждый раз улетало бы на новый, всё больший
                 # step — и дашборд рисовал бы через несколько запусков линию
-                # вместо одного столбика. Фиксируя step=0, все перезапуски
-                # сравнения одного и того же run'а остаются в одной точке.
+                # вместо одного столбика. Фиксируя step=0 + should_log_judge_avg
+                # (удаляет старую строку среднего, только если у неё МЕНЬШЕ
+                # примеров, чем у текущего прогона), на графике всегда остаётся
+                # ровно одна, самая статистически значимая точка на run.
                 trackio.log({
                     "judge_faithfulness_avg": round(avg_faithfulness, 3),
                     "judge_completeness_avg": round(avg_completeness, 3),
