@@ -75,7 +75,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--judge-model", default=os.getenv("JUDGE_MODEL_NAME", "gpt-5-nano"),
                    help="Модель-судья, например minimax-m3")
 
-    # --- сколько примеров из test-сплита датасета оценивать ---
+    # --- какой сплит и сколько примеров оценивать ---
+    p.add_argument("--eval-on", choices=["test", "train"], default="test",
+                   help="test (по умолчанию) — реальное качество/обобщение. train — контрольный "
+                        "прогон на обучающих примерах (сравнить с test, чтобы понять, не в "
+                        "переобучении ли дело или test просто требует незнакомых фактов)")
     p.add_argument("--iterations", type=int, default=None,
                    help="Оценить ровно N примеров из test-сплита и выйти без вопроса "
                         "'продолжаем?'. Не задано -> интерактивно по всему test-сплиту "
@@ -259,7 +263,8 @@ def _trackio_db_path(project: str) -> Path:
     return base / f"{project}.db"
 
 
-def should_log_judge_avg(project: str, run_name: str, n: int) -> bool:
+def should_log_judge_avg(project: str, run_name: str, n: int, metric_key: str,
+                         num_samples_key: str) -> bool:
     """Судью на одном и том же адаптере часто гоняют по нескольку раз — при
     каждом запуске trackio.log() добавляет НОВУЮ строку среднего, и вместо
     одного столбика на графике накапливается россыпь/линия точек за разные
@@ -267,7 +272,11 @@ def should_log_judge_avg(project: str, run_name: str, n: int) -> bool:
     прогон с БОЛЬШИМ n статистически надёжнее, поэтому именно он должен
     остаться единственным. Если у уже залогированного среднего примеров
     больше или столько же — новую (менее значимую) точку не пишем вообще.
-    Если меньше — удаляем старые строки и разрешаем запись новой."""
+    Если меньше — удаляем старые строки и разрешаем запись новой.
+
+    metric_key ищется по точному ключу JSON (не по грубой подстроке!) —
+    иначе '%judge_faithfulness_avg%' совпал бы и с 'judge_faithfulness_avg_train',
+    смешивая test- и train-прогоны в одном сравнении, хотя это разные метрики."""
     db_path = _trackio_db_path(project)
     if not db_path.is_file():
         return True  # ещё ничего не залогировано -> писать можно
@@ -276,8 +285,8 @@ def should_log_judge_avg(project: str, run_name: str, n: int) -> bool:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, metrics FROM metrics WHERE run_name = ? AND metrics LIKE '%judge_faithfulness_avg%'",
-            (run_name,),
+            "SELECT id, metrics FROM metrics WHERE run_name = ? AND metrics LIKE ?",
+            (run_name, f'%"{metric_key}":%'),
         )
         rows = cur.fetchall()
         if not rows:
@@ -286,12 +295,14 @@ def should_log_judge_avg(project: str, run_name: str, n: int) -> bool:
         max_prev_n = 0
         row_ids = []
         for row_id, metrics_json in rows:
-            row_ids.append(row_id)
             try:
                 data = json.loads(metrics_json)
             except json.JSONDecodeError:
                 continue
-            max_prev_n = max(max_prev_n, data.get("judge_num_samples", 0))
+            if metric_key not in data:  # LIKE мог зацепить лишнее -> перепроверяем точно
+                continue
+            row_ids.append(row_id)
+            max_prev_n = max(max_prev_n, data.get(num_samples_key, 0))
 
         if max_prev_n >= n:
             print(f"== пропускаю запись среднего в Trackio: у уже сохранённого прогона "
@@ -320,13 +331,15 @@ def main():
     judge_prompt = DOMAIN_JUDGE[args.domain]
 
     dataset_path = DOMAIN_DATASETS[args.domain]
-    test = load_train_eval_dataset(dataset_path)["test"]
+    split = load_train_eval_dataset(dataset_path)[args.eval_on]
     if args.shuffle:
-        test = test.shuffle(seed=args.seed)
+        split = split.shuffle(seed=args.seed)
     if args.iterations is not None:
-        test = test.select(range(min(args.iterations, len(test))))
-    print(f"== вопросы и эталонные ответы берутся из test-сплита {dataset_path} "
-          f"({len(test)} примеров)")
+        split = split.select(range(min(args.iterations, len(split))))
+    print(f"== вопросы и эталонные ответы берутся из {args.eval_on}-сплита {dataset_path} "
+          f"({len(split)} примеров)")
+
+    metric_suffix = "" if args.eval_on == "test" else f"_{args.eval_on}"
 
     reply_model, reply_tokenizer = load_model(
         use_lora=args.lora,
@@ -348,6 +361,8 @@ def main():
     result_file = os.path.join(result_dir, args.model.rstrip('/').split('/')[-1])
     if args.lora:
         result_file += f"&&{args.adapter.rstrip('/').split('/')[-1]}"
+    if args.eval_on != "test":
+        result_file += f"_{args.eval_on}"
     result_file += '.txt'
 
     print('===Начало цикла llm-as-judge\n')
@@ -359,11 +374,11 @@ def main():
     judge_times: list[float] = []
     entries: list[str] = []  # готовые блоки по каждому примеру -> пишем в файл одним махом
     try:
-        for example in test:
+        for example in split:
             iteration += 1
             question = build_user_content(example)
             reference_answer = example["answer"]
-            print(f'\n--- Пример {iteration}/{len(test)} ---')
+            print(f'\n--- Пример {iteration}/{len(split)} ---')
             print(f'=Вопрос:\n{question}')
 
             reply_start = time.perf_counter()
@@ -404,9 +419,9 @@ def main():
                 # для сравнения МЕЖДУ моделями/run'ами, эта — для просмотра
                 # разброса ВНУТРИ одного прогона).
                 trackio.log({
-                    "judge_faithfulness": faithfulness,
-                    "judge_completeness": completeness,
-                    "judge_consciousness": consciousness,
+                    f"judge_faithfulness{metric_suffix}": faithfulness,
+                    f"judge_completeness{metric_suffix}": completeness,
+                    f"judge_consciousness{metric_suffix}": consciousness,
                 }, step=iteration)
 
             entries.append(
@@ -447,7 +462,10 @@ def main():
                 f.write('#' * 60 + '\n')
                 f.write(''.join(entries))
 
-            if run_meta and should_log_judge_avg(run_meta["project"], run_meta["run_name"], n):
+            avg_key = f"judge_faithfulness_avg{metric_suffix}"
+            n_key = f"judge_num_samples{metric_suffix}"
+            if run_meta and should_log_judge_avg(run_meta["project"], run_meta["run_name"], n,
+                                                 avg_key, n_key):
                 # step=0 ЖЁСТКО, а не "трекио сам разберётся": Run.log() без
                 # явного step берёт self._next_step, который при resume="must"
                 # продолжается с максимума, уже сохранённого в БД для этого run'а
@@ -460,17 +478,18 @@ def main():
                 # примеров, чем у текущего прогона), на графике всегда остаётся
                 # ровно одна, самая статистически значимая точка на run.
                 trackio.log({
-                    "judge_faithfulness_avg": round(avg_faithfulness, 3),
-                    "judge_completeness_avg": round(avg_completeness, 3),
-                    "judge_consciousness_avg": round(avg_consciousness, 3),
-                    "judge_num_samples": n,
-                    "judge_reply_time_avg_sec": round(sum(reply_times) / n, 2),
-                    "judge_eval_time_avg_sec": round(sum(judge_times) / n, 2),
+                    avg_key: round(avg_faithfulness, 3),
+                    f"judge_completeness_avg{metric_suffix}": round(avg_completeness, 3),
+                    f"judge_consciousness_avg{metric_suffix}": round(avg_consciousness, 3),
+                    n_key: n,
+                    f"judge_reply_time_avg_sec{metric_suffix}": round(sum(reply_times) / n, 2),
+                    f"judge_eval_time_avg_sec{metric_suffix}": round(sum(judge_times) / n, 2),
                 }, step=0)
 
         if run_meta:
             if os.path.isfile(result_file):
-                trackio.log_artifact(result_file, name=f"{run_meta['run_name']}-judge-report",
+                trackio.log_artifact(result_file,
+                                     name=f"{run_meta['run_name']}-judge-report{metric_suffix}",
                                      type="report")
                 print(f"== репорт судьи сохранён как artifact в Trackio: {result_file}")
             trackio.finish()

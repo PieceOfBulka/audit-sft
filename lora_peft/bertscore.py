@@ -48,7 +48,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--adapter", default=None, help="Каталог с LoRA-адаптером")
     p.add_argument("--base-only", action="store_true", help="Оценить базовую модель без адаптера")
 
-    p.add_argument("--num", type=int, default=50, help="Сколько примеров из test оценивать")
+    p.add_argument("--eval-on", choices=["test", "train"], default="test",
+                   help="test (по умолчанию) — реальное качество/обобщение на невиданных данных. "
+                        "train — контрольный прогон на обучающих примерах: если train сильно лучше "
+                        "test, это сигнал либо переобучения, либо что test содержит вопросы с "
+                        "фактами, которых физически нет в обучающих данных")
+    p.add_argument("--num", type=int, default=50, help="Сколько примеров из выбранного сплита оценивать")
     p.add_argument("--batch-size", type=int, default=8,
                    help="Сколько примеров генерировать за один проход GPU (не путать с train batch)")
     p.add_argument("--max-new-tokens", type=int, default=512)
@@ -63,9 +68,12 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def default_out_path(out_dir: str, model_name: str, dataset_label: str, adapter_path: str) -> str:
+def default_out_path(out_dir: str, model_name: str, dataset_label: str, adapter_path: str,
+                     eval_on: str = "test") -> str:
     filename = f"{slug(model_name)}_{slug(dataset_label)}"
     filename += f"_{slug(adapter_path)}" if adapter_path else "_base"
+    if eval_on != "test":
+        filename += f"_{eval_on}"
     filename += ".json"
     return os.path.join(out_dir, filename)
 
@@ -176,13 +184,14 @@ def main():
     print(f"== device={device} | model={model_dir}")
 
     dataset_label = args.domain or os.path.splitext(os.path.basename(dataset_path))[0]
-    out_path = args.out or default_out_path(args.out_dir, args.model, dataset_label, args.adapter)
+    out_path = args.out or default_out_path(args.out_dir, args.model, dataset_label, args.adapter,
+                                            eval_on=args.eval_on)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-    test = load_train_eval_dataset(dataset_path)["test"]
-    n = min(args.num, len(test))
-    subset = test.select(range(n))
-    print(f"== оцениваем {n} примеров из test ({len(test)} всего)")
+    split = load_train_eval_dataset(dataset_path)[args.eval_on]
+    n = min(args.num, len(split))
+    subset = split.select(range(n))
+    print(f"== оцениваем {n} примеров из {args.eval_on} ({len(split)} всего)")
 
     model, tokenizer = load_model(args, model_dir, device)
 
@@ -211,6 +220,7 @@ def main():
 
     result = {
         "num_samples": n,
+        "eval_on": args.eval_on,
         "model": args.model,
         "adapter": None if args.base_only else args.adapter,
         "bertscore_model": args.bertscore_model or f"default-for-lang={args.lang}",
@@ -240,15 +250,19 @@ def main():
     if not args.base_only:
         run_meta = load_run_meta(args.adapter)
         if run_meta:
+            # Суффикс _train, чтобы контрольный прогон на обучающих данных не
+            # перезаписывал/не путался с основной test-метрикой на том же графике —
+            # это два разных числа, которые осмысленно сравнивать бок о бок.
+            suffix = "" if args.eval_on == "test" else f"_{args.eval_on}"
             trackio.init(project=run_meta["project"], name=run_meta["run_name"], resume="must")
             trackio.log({
-                "bertscore_precision": result["precision"],
-                "bertscore_recall": result["recall"],
-                "bertscore_f1": result["f1"],
-                "bertscore_generation_time_sec": result["generation_time_sec"],
-                "bertscore_time_sec": result["bertscore_time_sec"],
-                "bertscore_total_eval_time_sec": result["total_eval_time_sec"],
-                "bertscore_sec_per_example": result["sec_per_example"],
+                f"bertscore_precision{suffix}": result["precision"],
+                f"bertscore_recall{suffix}": result["recall"],
+                f"bertscore_f1{suffix}": result["f1"],
+                f"bertscore_generation_time_sec{suffix}": result["generation_time_sec"],
+                f"bertscore_time_sec{suffix}": result["bertscore_time_sec"],
+                f"bertscore_total_eval_time_sec{suffix}": result["total_eval_time_sec"],
+                f"bertscore_sec_per_example{suffix}": result["sec_per_example"],
             })
             trackio.finish()
             print(f"== метрики дописаны в Trackio-run '{run_meta['run_name']}'")

@@ -430,10 +430,10 @@ _run_bertscore, stop_bertscore = make_proc_runner()
 _run_judge, stop_judge = make_proc_runner()
 
 
-def launch_bertscore(model_id, adapter_path, dataset_choice, base_only, num, batch_size):
+def launch_bertscore(model_id, adapter_path, dataset_choice, base_only, num, batch_size, eval_on):
     cmd = [sys.executable, os.path.join(_ROOT, "lora_peft", "bertscore.py"),
            "--model", model_id, "--domain", dataset_choice,
-           "--num", str(num), "--batch-size", str(batch_size)]
+           "--num", str(num), "--batch-size", str(batch_size), "--eval-on", eval_on]
     if base_only or not adapter_path or adapter_path == NO_ADAPTER:
         cmd += ["--base-only"]
     else:
@@ -441,16 +441,17 @@ def launch_bertscore(model_id, adapter_path, dataset_choice, base_only, num, bat
     yield from _run_bertscore(cmd)
 
 
-def launch_judge(model_id, adapter_path, dataset_choice, base_only, backend_name, iterations, greedy):
+def launch_judge(model_id, adapter_path, dataset_choice, base_only, backend_name, iterations, greedy, eval_on):
     backend = JUDGE_BACKENDS[backend_name]
     api_key = os.environ.get(backend["api_key_env"], "not-needed")
 
-    # Без --shuffle: всегда одни и те же первые N примеров test-сплита (порядок
-    # самого test-сплита уже детерминирован фиксированным seed в load_dataset.py),
-    # чтобы разные модели/адаптеры можно было честно сравнивать по одинаковым данным.
+    # Без --shuffle: всегда одни и те же первые N примеров выбранного сплита
+    # (порядок самих сплитов уже детерминирован фиксированным seed в
+    # load_dataset.py), чтобы разные модели/адаптеры можно было честно
+    # сравнивать по одинаковым данным.
     cmd = [sys.executable, os.path.join(_ROOT, "lora_peft", "llm_as_judge.py"),
            "--model", resolve_model_dir(model_id), "--domain", dataset_choice,
-           "--judge-model", backend["model"],
+           "--judge-model", backend["model"], "--eval-on", eval_on,
            "--openai-api-key", api_key, "--iterations", str(iterations)]
     if backend["base_url"]:
         cmd += ["--openai-base-url", backend["base_url"]]
@@ -475,6 +476,10 @@ def build_eval_tab():
             eval_refresh_btn = gr.Button("🔄")
         eval_dataset_dd = gr.Dropdown(choices=_dataset_choice_names(), label="Датасет (--domain)")
         eval_base_only = gr.Checkbox(value=False, label="Оценивать базовую модель (без адаптера)")
+        eval_on_radio = gr.Radio(choices=["test", "train"], value="test", label="Сплит",
+                                 info="test — реальное качество; train — контрольный прогон "
+                                      "на обучающих данных (сравнить с test при подозрении на "
+                                      "переобучение или на 'нечестные' вопросы в test)")
 
         eval_refresh_btn.click(refresh_choices, None, [eval_model_dd, eval_adapter_dd])
 
@@ -489,7 +494,8 @@ def build_eval_tab():
                                 interactive=False, autoscroll=True)
             bs_start_btn.click(
                 launch_bertscore,
-                [eval_model_dd, eval_adapter_dd, eval_dataset_dd, eval_base_only, bs_num, bs_batch],
+                [eval_model_dd, eval_adapter_dd, eval_dataset_dd, eval_base_only, bs_num, bs_batch,
+                 eval_on_radio],
                 bs_log,
             )
             bs_stop_btn.click(stop_bertscore, None, bs_log)
@@ -511,7 +517,7 @@ def build_eval_tab():
             judge_start_btn.click(
                 launch_judge,
                 [eval_model_dd, eval_adapter_dd, eval_dataset_dd, eval_base_only,
-                 judge_backend, judge_iterations, judge_greedy],
+                 judge_backend, judge_iterations, judge_greedy, eval_on_radio],
                 judge_log,
             )
             judge_stop_btn.click(stop_judge, None, judge_log)
