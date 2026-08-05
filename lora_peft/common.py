@@ -45,8 +45,8 @@ def slug(text: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)
 
 
-def build_run_name(domain_or_label: str, model_name: str, rank: int, alpha: int, lr: float) -> str:
-    return f"{slug(domain_or_label)}_{slug(model_name)}_r{rank}a{alpha}_lr{lr:g}"
+def build_run_name(domain_or_label: str, model_name: str, rank: int, alpha: int, epochs: int, lr: float) -> str:
+    return f"{slug(domain_or_label)}_{slug(model_name)}_r{rank}a{alpha}_ep{epochs}_lr{lr:g}"
 
 
 def save_run_meta(adapter_dir: str, run_name: str) -> None:

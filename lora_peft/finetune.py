@@ -112,7 +112,7 @@ def main():
     target_modules = [m.strip() for m in args.target_modules.split(",") if m.strip()]
 
     run_label = args.adapter_name or args.domain or os.path.basename(adapter_dir)
-    run_name = build_run_name(run_label, args.model, args.rank, args.alpha, args.lr)
+    run_name = build_run_name(run_label, args.model, args.rank, args.alpha, args.epochs, args.lr)
     # Не вызываем trackio.init() тут вручную: Trainer с report_to="trackio"
     # сам создаёт run через TrackioCallback (используя project=/run_name= из
     # TrainingArguments ниже) и сам закрывает его в on_train_end. Ручной init
