@@ -56,5 +56,5 @@ wheel>=0.42.0
 
 # --- утилиты проекта ---
 python-dotenv
-clearml      # self-hosted трекер экспериментов (обучение + bertscore + llm-as-judge в одной Task) — см. `clearml-init`
+mlflow       # self-hosted трекер экспериментов (обучение + bertscore + llm-as-judge в одном run)
 gradio       # lora_peft/app.py, lora_peft/compare_ui.py

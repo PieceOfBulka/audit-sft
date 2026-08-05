@@ -29,13 +29,13 @@ from unsloth import FastLanguageModel  # должен импортировать
 import torch
 from transformers import DataCollatorForSeq2Seq, Trainer
 
-from clearml import Task
+import mlflow
 
 from load_dataset import load_train_eval_dataset
-from lora_peft.common import (CLEARML_PROJECT, DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
+from lora_peft.common import (MLFLOW_EXPERIMENT, DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                TimingCallback, build_run_name,
                                build_training_arguments, make_tokenize_fn,
-                               pick_device, resolve_dataset_path, resolve_model_dir,
+                               pick_device, resolve_model_dir,
                                save_run_meta, slug)
 
 
@@ -98,9 +98,7 @@ def main():
     if args.dataset is None and args.domain is None:
         raise SystemExit("Нужен --domain (встроенный профиль) или --dataset + --system-prompt")
 
-    # --domain -> датасет тянется из ClearML (зарегистрирован заранее через
-    # scripts/upload_datasets_to_clearml.py); --dataset -> локальный файл как есть.
-    dataset_path = resolve_dataset_path(args.domain) if args.domain and not args.dataset else args.dataset
+    dataset_path = args.dataset or DOMAIN_DATASETS.get(args.domain)
     system_prompt = args.system_prompt or (
         DOMAIN_SYSTEM_PROMPTS[args.domain] if args.domain else None
     )
@@ -117,11 +115,13 @@ def main():
     run_label = args.adapter_name or args.domain or os.path.basename(adapter_dir)
     run_name = build_run_name(run_label, args.model, args.rank, args.alpha, args.lr)
 
-    # В отличие от Trackio (где pre-init конфликтовал с TrackioCallback),
-    # ClearMLCallback при обнаружении уже существующей Task.current_task()
-    # ПОДКЛЮЧАЕТСЯ к ней и НЕ закрывает автоматически в on_train_end —
-    # поэтому создаём Task заранее и просто держим ссылку до конца main().
-    task = Task.init(project_name=CLEARML_PROJECT, task_name=run_name)
+    # MLflowCallback запускает run сам только если mlflow.active_run() is None —
+    # раз мы уже открыли run здесь заранее, колбэк просто подключится к нему
+    # и НЕ будет закрывать его автоматически в on_train_end (см. integration_utils.py:
+    # self._auto_end_run остаётся False, если active_run() уже был не None).
+    # MLFLOW_TRACKING_URI читается mlflow автоматически из окружения.
+    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+    run = mlflow.start_run(run_name=run_name)
 
     print(f"== device={device} | model={model_dir} | dataset={dataset_path}")
     print(f"== LoRA: rank={args.rank} alpha={args.alpha} dropout={args.lora_dropout} "
@@ -176,7 +176,7 @@ def main():
         load_best_model_at_end=args.load_best_model_at_end,
         metric_for_best_model="eval_loss" if args.load_best_model_at_end else None,
         optim="adamw_8bit",
-        report_to="clearml",
+        report_to="mlflow",
         run_name=run_name,
         dataloader_pin_memory=(device == "cuda"),
     )
@@ -198,13 +198,14 @@ def main():
     model.save_pretrained(adapter_dir)
     tokenizer.save_pretrained(adapter_dir)
 
-    # Метаданные задачи — чтобы bertscore.py/llm_as_judge.py дописывали метрики
-    # оценки в ту же ClearML Task, не заводя новую (Task.get_task(task_id=...)).
-    save_run_meta(adapter_dir, task.id, run_name)
+    # Метаданные run'а — чтобы bertscore.py/llm_as_judge.py дописывали метрики
+    # оценки в тот же MLflow run, не заводя новый (mlflow.start_run(run_id=...)).
+    save_run_meta(adapter_dir, run.info.run_id, run_name)
 
-    # task не была закрыта ClearMLCallback (мы её создали заранее) — просто
-    # прикладываем адаптер как artifact к уже открытой Task.
-    task.upload_artifact(name=f"{run_name}-adapter", artifact_object=adapter_dir)
+    # run не был закрыт MLflowCallback (мы его открыли заранее) — прикладываем
+    # адаптер как artifact и закрываем run сами.
+    mlflow.log_artifacts(adapter_dir, artifact_path=f"{run_name}-adapter")
+    mlflow.end_run()
 
 
 if __name__ == "__main__":

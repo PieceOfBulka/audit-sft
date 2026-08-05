@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Единый Gradio-интерфейс: чат/сравнение моделей + запуск обучения + ClearML.
+"""Единый Gradio-интерфейс: чат/сравнение моделей + запуск обучения + MLflow.
 
 Три вкладки:
   1. Чат / Сравнение — выбор модели+адаптера, обычный чат или split-screen
      сравнение (база vs дообученная).
   2. Обучение — запуск lora_peft/finetune.py с выбором модели, LoRA-параметров
      и датасета (существующего или только что загруженного).
-  3. ClearML — ссылка на self-hosted ClearML веб-интерфейс (обучение +
-     bertscore + judge в одном проекте). В отличие от Trackio, ClearML-сервер
-     работает независимо от этого процесса — здесь просто ссылка, ничего
-     не поднимаем сами.
+  3. MLflow — ссылка на self-hosted MLflow веб-интерфейс (обучение +
+     bertscore + judge в одном эксперименте). MLflow-сервер работает
+     независимо от этого процесса — здесь просто ссылка, ничего не
+     поднимаем сами.
 
 Запуск из корня репозитория:
     python lora_peft/app.py
@@ -31,7 +31,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 
 from peft import PeftModel
 
-from lora_peft.common import (CLEARML_PROJECT, DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
+from lora_peft.common import (MLFLOW_EXPERIMENT, DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                list_available_adapters,
                                list_available_models, pick_device,
                                resolve_model_dir, silence_max_length_warning)
@@ -468,7 +468,7 @@ def build_eval_tab():
     with gr.Tab("📈 Оценка"):
         gr.Markdown("Оценка модели/адаптера через `bertscore.py` (метрика к эталонным ответам) "
                     "и `llm_as_judge.py` (LLM-судья по сгенерированным вопросам). "
-                    "Оба пишут метрики в ту же ClearML Task, что и обучение (если есть clearml_task.json рядом с адаптером).")
+                    "Оба пишут метрики в тот же MLflow run, что и обучение (если есть mlflow_run.json рядом с адаптером).")
 
         with gr.Row():
             eval_model_dd = gr.Dropdown(choices=list_available_models(), allow_custom_value=True,
@@ -521,37 +521,37 @@ def build_eval_tab():
 
 
 # =====================================================================
-# Вкладка 4: ClearML
+# Вкладка 4: MLflow
 # =====================================================================
-# В отличие от Trackio, self-hosted ClearML — отдельный сервер, работающий
-# независимо от app.py. Ничего не поднимаем и не проксируем сами — просто
-# ссылка + попытка встроить в iframe (сработает, если ClearML web-сервер
-# разрешает embedding в X-Frame-Options/CSP; если нет — просто открой по ссылке).
+# self-hosted MLflow — отдельный сервер, работающий независимо от app.py.
+# Ничего не поднимаем и не проксируем сами — просто ссылка + попытка
+# встроить в iframe (сработает, если MLflow web-сервер разрешает embedding
+# в X-Frame-Options/CSP; если нет — просто открой по ссылке).
 
-def clearml_web_host() -> str | None:
-    return os.environ.get("CLEARML_WEB_HOST")
+def mlflow_web_host() -> str | None:
+    return os.environ.get("MLFLOW_WEB_HOST")
 
 
-def open_clearml_dashboard():
-    web_host = clearml_web_host()
+def open_mlflow_dashboard():
+    web_host = mlflow_web_host()
     if not web_host:
-        return ('<p>Не задан <code>CLEARML_WEB_HOST</code> в .env — укажи адрес веб-интерфейса '
-               'твоего self-hosted ClearML-сервера (например http://10.x.x.x:8080) и перезапусти app.py.</p>')
+        return ('<p>Не задан <code>MLFLOW_WEB_HOST</code> в .env — укажи адрес веб-интерфейса '
+               'твоего self-hosted MLflow-сервера (например http://10.x.x.x:5000) и перезапусти app.py.</p>')
     url = web_host.rstrip("/")
     html = (f'<iframe src="{url}" style="width:100%; height:80vh; border:none;"></iframe>'
-           f'<p>Если дашборд не открылся во фрейме (ClearML может запрещать embedding) — '
+           f'<p>Если дашборд не открылся во фрейме (MLflow может запрещать embedding) — '
            f'<a href="{url}" target="_blank">открыть в новой вкладке</a>. '
-           f'Ищи проект <code>{CLEARML_PROJECT}</code> — там обучение + bertscore + judge для всех моделей.</p>')
+           f'Ищи эксперимент <code>{MLFLOW_EXPERIMENT}</code> — там обучение + bertscore + judge для всех моделей.</p>')
     return html
 
 
-def build_clearml_tab():
-    with gr.Tab("📊 ClearML"):
-        gr.Markdown(f"Все прогоны обучения + BERTScore + LLM-as-judge — проект `{CLEARML_PROJECT}` "
-                    "на self-hosted ClearML-сервере.")
+def build_mlflow_tab():
+    with gr.Tab("📊 MLflow"):
+        gr.Markdown(f"Все прогоны обучения + BERTScore + LLM-as-judge — эксперимент `{MLFLOW_EXPERIMENT}` "
+                    "на self-hosted MLflow-сервере.")
         open_btn = gr.Button("Открыть дашборд", variant="primary")
         frame = gr.HTML()
-        open_btn.click(open_clearml_dashboard, None, frame)
+        open_btn.click(open_mlflow_dashboard, None, frame)
 
 
 # =====================================================================
@@ -561,7 +561,7 @@ with gr.Blocks(title="LoRA Finetuning Studio") as demo:
     build_chat_tab()
     build_train_tab()
     build_eval_tab()
-    build_clearml_tab()
+    build_mlflow_tab()
 
 demo.queue()
 

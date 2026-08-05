@@ -11,11 +11,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from openai import OpenAI
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from clearml import Task
+import mlflow
 
 from lora_peft.sft_lora_peft import pick_device, torch_dtype
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_JUDGE, DOMAIN_SYSTEM_PROMPTS, Judgement,
-                               build_user_content, load_run_meta, resolve_dataset_path,
+                               build_user_content, load_run_meta,
                                silence_max_length_warning, slug)
 from load_dataset import load_train_eval_dataset
 
@@ -258,7 +258,7 @@ def main():
     system_prompt = args.system or DOMAIN_SYSTEM_PROMPTS[args.domain]
     judge_prompt = DOMAIN_JUDGE[args.domain]
 
-    dataset_path = resolve_dataset_path(args.domain)
+    dataset_path = DOMAIN_DATASETS[args.domain]
     test = load_train_eval_dataset(dataset_path)["test"]
     if args.shuffle:
         test = test.shuffle(seed=args.seed)
@@ -275,15 +275,13 @@ def main():
         )
 
     run_meta = load_run_meta(args.adapter) if args.lora else None
-    task = None
-    logger = None
+    mlflow_run = None
     if run_meta:
-        task = Task.get_task(task_id=run_meta["task_id"])
-        logger = task.get_logger()
-        print(f"== метрики judge будут дописаны в ClearML Task '{run_meta['run_name']}'")
+        mlflow_run = mlflow.start_run(run_id=run_meta["run_id"])
+        print(f"== метрики judge будут дописаны в MLflow run '{run_meta['run_name']}'")
     elif args.lora:
-        print(f"== {os.path.join(args.adapter, 'clearml_task.json')} не найден — "
-              "пропускаю логирование в ClearML (адаптер обучен без finetune.py?)")
+        print(f"== {os.path.join(args.adapter, 'mlflow_run.json')} не найден — "
+              "пропускаю логирование в MLflow (адаптер обучен без finetune.py?)")
 
     result_dir = f"judgements/judge_{slug(args.judge_model)}"
     os.makedirs(result_dir, exist_ok=True)
@@ -340,18 +338,15 @@ def main():
             reply_times.append(reply_time)
             judge_times.append(judge_time)
 
-            if logger:
+            if mlflow_run:
                 # Построчные оценки — как менялась оценка от примера к примеру
                 # внутри ЭТОГО прогона (не путать с judge_*_avg ниже — та метрика
                 # для сравнения МЕЖДУ моделями/задачами, эта — для просмотра
-                # разброса ВНУТРИ одного прогона). title=метрика, series=единая
-                # линия "per_example" — report_scalar сам строит график по iteration.
-                logger.report_scalar(title="judge_faithfulness", series="per_example",
-                                     value=faithfulness, iteration=iteration)
-                logger.report_scalar(title="judge_completeness", series="per_example",
-                                     value=completeness, iteration=iteration)
-                logger.report_scalar(title="judge_consciousness", series="per_example",
-                                     value=consciousness, iteration=iteration)
+                # разброса ВНУТРИ одного прогона). step=iteration -> MLflow сам
+                # строит график по шагам для одного и того же key.
+                mlflow.log_metric("judge_faithfulness", faithfulness, step=iteration)
+                mlflow.log_metric("judge_completeness", completeness, step=iteration)
+                mlflow.log_metric("judge_consciousness", consciousness, step=iteration)
 
             entries.append(
                 '\n==============' +
@@ -391,21 +386,22 @@ def main():
                 f.write('#' * 60 + '\n')
                 f.write(''.join(entries))
 
-            if logger:
-                # report_single_value -> метрика "Summary" в ClearML, сравнимая
-                # между задачами как одно число (аналог bar-графика). В отличие
-                # от Trackio, тут не нужно вручную закреплять step=0 — ClearML
-                # сам держит это отдельно от per-example scalar'ов выше.
-                logger.report_single_value(name="judge_faithfulness_avg", value=round(avg_faithfulness, 3))
-                logger.report_single_value(name="judge_completeness_avg", value=round(avg_completeness, 3))
-                logger.report_single_value(name="judge_consciousness_avg", value=round(avg_consciousness, 3))
-                logger.report_single_value(name="judge_num_samples", value=n)
-                logger.report_single_value(name="judge_reply_time_avg_sec", value=round(sum(reply_times) / n, 2))
-                logger.report_single_value(name="judge_eval_time_avg_sec", value=round(sum(judge_times) / n, 2))
+            if mlflow_run:
+                # log_metric без step -> одно сравнимое число между run'ами
+                # (аналог bar-графика), отдельно от per-example метрик выше
+                # (другой key, так что они не смешиваются).
+                mlflow.log_metric("judge_faithfulness_avg", round(avg_faithfulness, 3))
+                mlflow.log_metric("judge_completeness_avg", round(avg_completeness, 3))
+                mlflow.log_metric("judge_consciousness_avg", round(avg_consciousness, 3))
+                mlflow.log_metric("judge_num_samples", n)
+                mlflow.log_metric("judge_reply_time_avg_sec", round(sum(reply_times) / n, 2))
+                mlflow.log_metric("judge_eval_time_avg_sec", round(sum(judge_times) / n, 2))
 
-        if task and os.path.isfile(result_file):
-            task.upload_artifact(name=f"{run_meta['run_name']}-judge-report", artifact_object=result_file)
-            print(f"== репорт судьи сохранён как artifact в ClearML: {result_file}")
+        if mlflow_run:
+            if os.path.isfile(result_file):
+                mlflow.log_artifact(result_file, artifact_path=f"{run_meta['run_name']}-judge-report")
+                print(f"== репорт судьи сохранён как artifact в MLflow: {result_file}")
+            mlflow.end_run()
 
 if __name__=='__main__':
     main()

@@ -15,8 +15,8 @@
 Результаты по умолчанию сохраняются в bertscores/<модель>_<датасет>.json
 (например bertscores/Qwen_Qwen3-8B_zakupki.json); переопределить путь можно
 через --out, либо только каталог через --out-dir. Если рядом с адаптером есть
-clearml_task.json (создаётся finetune.py) — метрики и время дописываются в ту
-же ClearML Task, что и обучение.
+mlflow_run.json (создаётся finetune.py) — метрики и время дописываются в тот
+же MLflow run, что и обучение.
 """
 import argparse
 import json
@@ -27,12 +27,12 @@ import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
-from clearml import Task
+import mlflow
 
 from load_dataset import load_train_eval_dataset
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                build_user_content, load_run_meta, pick_device,
-                               resolve_dataset_path, resolve_model_dir,
+                               resolve_model_dir,
                                silence_max_length_warning, slug)
 
 
@@ -165,7 +165,7 @@ def main():
     if args.dataset is None and args.domain is None:
         raise SystemExit("Нужен --domain (встроенный профиль) или --dataset + --system-prompt")
 
-    dataset_path = resolve_dataset_path(args.domain) if args.domain and not args.dataset else args.dataset
+    dataset_path = args.dataset or DOMAIN_DATASETS.get(args.domain)
     system_prompt = args.system_prompt or (
         DOMAIN_SYSTEM_PROMPTS[args.domain] if args.domain else None
     )
@@ -241,22 +241,21 @@ def main():
     if not args.base_only:
         run_meta = load_run_meta(args.adapter)
         if run_meta:
-            task = Task.get_task(task_id=run_meta["task_id"])
-            logger = task.get_logger()
-            # report_single_value -> отдельная метрика "Summary", сравнимая между
-            # задачами в таблице ClearML (аналог bar-графика — без ручной возни
-            # со step, которая была нужна для Trackio).
-            logger.report_single_value(name="bertscore_precision", value=result["precision"])
-            logger.report_single_value(name="bertscore_recall", value=result["recall"])
-            logger.report_single_value(name="bertscore_f1", value=result["f1"])
-            logger.report_single_value(name="bertscore_generation_time_sec", value=result["generation_time_sec"])
-            logger.report_single_value(name="bertscore_time_sec", value=result["bertscore_time_sec"])
-            logger.report_single_value(name="bertscore_total_eval_time_sec", value=result["total_eval_time_sec"])
-            logger.report_single_value(name="bertscore_sec_per_example", value=result["sec_per_example"])
-            print(f"== метрики дописаны в ClearML Task '{run_meta['run_name']}'")
+            with mlflow.start_run(run_id=run_meta["run_id"]):
+                # log_metric без step -> одно сравнимое значение между run'ами
+                # в таблице MLflow (аналог bar-графика — без ручной возни со
+                # step, которая была нужна для Trackio).
+                mlflow.log_metric("bertscore_precision", result["precision"])
+                mlflow.log_metric("bertscore_recall", result["recall"])
+                mlflow.log_metric("bertscore_f1", result["f1"])
+                mlflow.log_metric("bertscore_generation_time_sec", result["generation_time_sec"])
+                mlflow.log_metric("bertscore_time_sec", result["bertscore_time_sec"])
+                mlflow.log_metric("bertscore_total_eval_time_sec", result["total_eval_time_sec"])
+                mlflow.log_metric("bertscore_sec_per_example", result["sec_per_example"])
+            print(f"== метрики дописаны в MLflow run '{run_meta['run_name']}'")
         else:
-            print(f"== {os.path.join(args.adapter, 'clearml_task.json')} не найден — "
-                  "пропускаю логирование в ClearML (адаптер обучен без finetune.py?)")
+            print(f"== {os.path.join(args.adapter, 'mlflow_run.json')} не найден — "
+                  "пропускаю логирование в MLflow (адаптер обучен без finetune.py?)")
 
 
 if __name__ == "__main__":
