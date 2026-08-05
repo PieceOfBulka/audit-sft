@@ -12,14 +12,14 @@ import torch
 from transformers import TrainerCallback, TrainingArguments
 from pydantic import BaseModel
 
-# Единый проект Trackio для всех LoRA-экспериментов — так все run'ы видны
+# Единый проект ClearML для всех LoRA-экспериментов — так все задачи видны
 # рядом в одном дашборде вне зависимости от домена/модели.
-TRACKIO_PROJECT = "lora-finetuning"
+CLEARML_PROJECT = "lora-finetuning"
 
-# Имя файла с метаданными run'а, который сохраняется рядом с адаптером,
-# чтобы evaluate.py/llm_as_judge.py могли переоткрыть тот же Trackio-run
-# (resume="must"), не зная и не пересобирая гиперпараметры заново.
-RUN_META_FILENAME = "trackio_run.json"
+# Имя файла с метаданными задачи, который сохраняется рядом с адаптером,
+# чтобы bertscore.py/llm_as_judge.py могли переоткрыть ту же ClearML Task
+# (Task.get_task(task_id=...)), не зная и не пересобирая гиперпараметры заново.
+RUN_META_FILENAME = "clearml_task.json"
 
 
 def pick_device() -> str:
@@ -49,12 +49,13 @@ def build_run_name(domain_or_label: str, model_name: str, rank: int, alpha: int,
     return f"{slug(domain_or_label)}_{slug(model_name)}_r{rank}a{alpha}_lr{lr:g}"
 
 
-def save_run_meta(adapter_dir: str, run_name: str) -> None:
-    """Пишет trackio_run.json рядом с адаптером — чтобы оценочные скрипты
-    могли дописывать метрики в тот же run, который создал finetune.py."""
+def save_run_meta(adapter_dir: str, task_id: str, run_name: str) -> None:
+    """Пишет clearml_task.json рядом с адаптером — чтобы оценочные скрипты
+    могли дописывать метрики в ту же ClearML Task, которую создал finetune.py."""
     os.makedirs(adapter_dir, exist_ok=True)
     with open(os.path.join(adapter_dir, RUN_META_FILENAME), "w", encoding="utf-8") as fh:
-        json.dump({"project": TRACKIO_PROJECT, "run_name": run_name}, fh, ensure_ascii=False)
+        json.dump({"project": CLEARML_PROJECT, "task_id": task_id, "run_name": run_name},
+                  fh, ensure_ascii=False)
 
 
 def load_run_meta(adapter_dir: str) -> dict | None:
@@ -254,6 +255,21 @@ DOMAIN_DATASETS = {
     'easydataset': os.path.join("data", "zakupki", "easydataset.json"),
     'zakupki5500': os.path.join("data", "zakupki", "dataset5500.json"),
 }
+
+
+def resolve_dataset_path(domain: str) -> str:
+    """Тянет датасет из ClearML (Dataset.get(...).get_local_copy()) вместо
+    чтения локального файла напрямую — датасеты зарегистрированы через
+    scripts/upload_datasets_to_clearml.py под тем же именем, что и --domain.
+    ClearML кэширует локальную копию сам, повторные вызовы почти бесплатны.
+    DOMAIN_DATASETS[domain] здесь используется только для имени файла внутри
+    датасета (basename), не как путь на диске."""
+    from clearml import Dataset
+
+    ds = Dataset.get(dataset_project=CLEARML_PROJECT, dataset_name=domain, only_completed=True)
+    local_dir = ds.get_local_copy()
+    filename = os.path.basename(DOMAIN_DATASETS[domain])
+    return os.path.join(local_dir, filename)
 
 
 #==================================

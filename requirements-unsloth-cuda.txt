@@ -56,6 +56,5 @@ wheel>=0.42.0
 
 # --- утилиты проекта ---
 python-dotenv
-trackio      # локальный трекер экспериментов (обучение + bertscore + llm-as-judge в одном run)
-nvidia-ml-py # даёт Trackio auto_log_gpu (загрузка/память GPU в те же run'ы) — без него авто-детект молча не находит GPU
+clearml      # self-hosted трекер экспериментов (обучение + bertscore + llm-as-judge в одной Task) — см. `clearml-init`
 gradio       # lora_peft/app.py, lora_peft/compare_ui.py

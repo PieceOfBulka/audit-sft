@@ -29,13 +29,13 @@ from unsloth import FastLanguageModel  # должен импортировать
 import torch
 from transformers import DataCollatorForSeq2Seq, Trainer
 
-import trackio
+from clearml import Task
 
 from load_dataset import load_train_eval_dataset
-from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
-                               TRACKIO_PROJECT, TimingCallback, build_run_name,
+from lora_peft.common import (CLEARML_PROJECT, DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
+                               TimingCallback, build_run_name,
                                build_training_arguments, make_tokenize_fn,
-                               pick_device, resolve_model_dir,
+                               pick_device, resolve_dataset_path, resolve_model_dir,
                                save_run_meta, slug)
 
 
@@ -98,14 +98,17 @@ def main():
     if args.dataset is None and args.domain is None:
         raise SystemExit("Нужен --domain (встроенный профиль) или --dataset + --system-prompt")
 
-    dataset_path = DOMAIN_DATASETS.get(args.dataset) or args.dataset or DOMAIN_DATASETS.get(args.domain)
+    # --domain -> датасет тянется из ClearML (зарегистрирован заранее через
+    # scripts/upload_datasets_to_clearml.py); --dataset -> локальный файл как есть.
+    dataset_path = resolve_dataset_path(args.domain) if args.domain and not args.dataset else args.dataset
     system_prompt = args.system_prompt or (
         DOMAIN_SYSTEM_PROMPTS[args.domain] if args.domain else None
     )
     if system_prompt is None:
         raise SystemExit("Без --domain нужно явно передать --system-prompt")
 
-    adapter_dir = default_adapter_path(model_name=args.model, dataset_label=dataset_path, adapter_name=args.adapter_name)
+    adapter_dir = default_adapter_path(model_name=args.model, dataset_label=args.domain or dataset_path,
+                                       adapter_name=args.adapter_name)
 
     device = pick_device()
     model_dir = resolve_model_dir(args.model)
@@ -113,11 +116,12 @@ def main():
 
     run_label = args.adapter_name or args.domain or os.path.basename(adapter_dir)
     run_name = build_run_name(run_label, args.model, args.rank, args.alpha, args.lr)
-    # Не вызываем trackio.init() тут вручную: Trainer с report_to="trackio"
-    # сам создаёт run через TrackioCallback (используя project=/run_name= из
-    # TrainingArguments ниже) и сам закрывает его в on_train_end. Ручной init
-    # здесь создавал ВТОРОЙ, лишний run, а к моменту log_artifact() ниже
-    # run уже был закрыт колбэком — оттуда и "Call trackio.init() before...".
+
+    # В отличие от Trackio (где pre-init конфликтовал с TrackioCallback),
+    # ClearMLCallback при обнаружении уже существующей Task.current_task()
+    # ПОДКЛЮЧАЕТСЯ к ней и НЕ закрывает автоматически в on_train_end —
+    # поэтому создаём Task заранее и просто держим ссылку до конца main().
+    task = Task.init(project_name=CLEARML_PROJECT, task_name=run_name)
 
     print(f"== device={device} | model={model_dir} | dataset={dataset_path}")
     print(f"== LoRA: rank={args.rank} alpha={args.alpha} dropout={args.lora_dropout} "
@@ -172,8 +176,7 @@ def main():
         load_best_model_at_end=args.load_best_model_at_end,
         metric_for_best_model="eval_loss" if args.load_best_model_at_end else None,
         optim="adamw_8bit",
-        report_to="trackio",
-        project=TRACKIO_PROJECT,
+        report_to="clearml",
         run_name=run_name,
         dataloader_pin_memory=(device == "cuda"),
     )
@@ -195,16 +198,13 @@ def main():
     model.save_pretrained(adapter_dir)
     tokenizer.save_pretrained(adapter_dir)
 
-    # Метаданные run'а — чтобы evaluate.py/llm_as_judge.py дописывали метрики
-    # оценки (bertscore, judge, время) в тот же Trackio-run, не заводя новый.
-    save_run_meta(adapter_dir, run_name)
+    # Метаданные задачи — чтобы bertscore.py/llm_as_judge.py дописывали метрики
+    # оценки в ту же ClearML Task, не заводя новую (Task.get_task(task_id=...)).
+    save_run_meta(adapter_dir, task.id, run_name)
 
-    # TrackioCallback уже закрыл run в on_train_end — переоткрываем его же
-    # (resume="must": ошибка, если вдруг run с таким именем не найден, а не
-    # тихое создание нового) только чтобы приложить адаптер как artifact.
-    trackio.init(project=TRACKIO_PROJECT, name=run_name, resume="must")
-    trackio.log_artifact(adapter_dir, name=f"{run_name}-adapter", type="model")
-    trackio.finish()
+    # task не была закрыта ClearMLCallback (мы её создали заранее) — просто
+    # прикладываем адаптер как artifact к уже открытой Task.
+    task.upload_artifact(name=f"{run_name}-adapter", artifact_object=adapter_dir)
 
 
 if __name__ == "__main__":

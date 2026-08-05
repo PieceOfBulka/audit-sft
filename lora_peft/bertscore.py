@@ -15,8 +15,8 @@
 Результаты по умолчанию сохраняются в bertscores/<модель>_<датасет>.json
 (например bertscores/Qwen_Qwen3-8B_zakupki.json); переопределить путь можно
 через --out, либо только каталог через --out-dir. Если рядом с адаптером есть
-trackio_run.json (создаётся finetune.py) — метрики и время дописываются в тот
-же Trackio-run, что и обучение.
+clearml_task.json (создаётся finetune.py) — метрики и время дописываются в ту
+же ClearML Task, что и обучение.
 """
 import argparse
 import json
@@ -27,12 +27,13 @@ import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
-import trackio
+from clearml import Task
 
 from load_dataset import load_train_eval_dataset
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                build_user_content, load_run_meta, pick_device,
-                               resolve_model_dir, silence_max_length_warning, slug)
+                               resolve_dataset_path, resolve_model_dir,
+                               silence_max_length_warning, slug)
 
 
 def parse_args() -> argparse.Namespace:
@@ -164,7 +165,7 @@ def main():
     if args.dataset is None and args.domain is None:
         raise SystemExit("Нужен --domain (встроенный профиль) или --dataset + --system-prompt")
 
-    dataset_path = DOMAIN_DATASETS.get(args.dataset) or args.dataset or DOMAIN_DATASETS.get(args.domain)
+    dataset_path = resolve_dataset_path(args.domain) if args.domain and not args.dataset else args.dataset
     system_prompt = args.system_prompt or (
         DOMAIN_SYSTEM_PROMPTS[args.domain] if args.domain else None
     )
@@ -240,21 +241,22 @@ def main():
     if not args.base_only:
         run_meta = load_run_meta(args.adapter)
         if run_meta:
-            trackio.init(project=run_meta["project"], name=run_meta["run_name"], resume="must")
-            trackio.log({
-                "bertscore_precision": result["precision"],
-                "bertscore_recall": result["recall"],
-                "bertscore_f1": result["f1"],
-                "bertscore_generation_time_sec": result["generation_time_sec"],
-                "bertscore_time_sec": result["bertscore_time_sec"],
-                "bertscore_total_eval_time_sec": result["total_eval_time_sec"],
-                "bertscore_sec_per_example": result["sec_per_example"],
-            })
-            trackio.finish()
-            print(f"== метрики дописаны в Trackio-run '{run_meta['run_name']}'")
+            task = Task.get_task(task_id=run_meta["task_id"])
+            logger = task.get_logger()
+            # report_single_value -> отдельная метрика "Summary", сравнимая между
+            # задачами в таблице ClearML (аналог bar-графика — без ручной возни
+            # со step, которая была нужна для Trackio).
+            logger.report_single_value(name="bertscore_precision", value=result["precision"])
+            logger.report_single_value(name="bertscore_recall", value=result["recall"])
+            logger.report_single_value(name="bertscore_f1", value=result["f1"])
+            logger.report_single_value(name="bertscore_generation_time_sec", value=result["generation_time_sec"])
+            logger.report_single_value(name="bertscore_time_sec", value=result["bertscore_time_sec"])
+            logger.report_single_value(name="bertscore_total_eval_time_sec", value=result["total_eval_time_sec"])
+            logger.report_single_value(name="bertscore_sec_per_example", value=result["sec_per_example"])
+            print(f"== метрики дописаны в ClearML Task '{run_meta['run_name']}'")
         else:
-            print(f"== {os.path.join(args.adapter, 'trackio_run.json')} не найден — "
-                  "пропускаю логирование в Trackio (адаптер обучен без finetune.py?)")
+            print(f"== {os.path.join(args.adapter, 'clearml_task.json')} не найден — "
+                  "пропускаю логирование в ClearML (адаптер обучен без finetune.py?)")
 
 
 if __name__ == "__main__":

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Единый Gradio-интерфейс: чат/сравнение моделей + запуск обучения + Trackio.
+"""Единый Gradio-интерфейс: чат/сравнение моделей + запуск обучения + ClearML.
 
 Три вкладки:
   1. Чат / Сравнение — выбор модели+адаптера, обычный чат или split-screen
      сравнение (база vs дообученная).
   2. Обучение — запуск lora_peft/finetune.py с выбором модели, LoRA-параметров
      и датасета (существующего или только что загруженного).
-  3. Trackio — встроенный дашборд экспериментов (обучение + bertscore + judge).
+  3. ClearML — ссылка на self-hosted ClearML веб-интерфейс (обучение +
+     bertscore + judge в одном проекте). В отличие от Trackio, ClearML-сервер
+     работает независимо от этого процесса — здесь просто ссылка, ничего
+     не поднимаем сами.
 
 Запуск из корня репозитория:
     python lora_peft/app.py
@@ -28,8 +31,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 
 from peft import PeftModel
 
-from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
-                               TRACKIO_PROJECT, list_available_adapters,
+from lora_peft.common import (CLEARML_PROJECT, DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
+                               list_available_adapters,
                                list_available_models, pick_device,
                                resolve_model_dir, silence_max_length_warning)
 
@@ -465,7 +468,7 @@ def build_eval_tab():
     with gr.Tab("📈 Оценка"):
         gr.Markdown("Оценка модели/адаптера через `bertscore.py` (метрика к эталонным ответам) "
                     "и `llm_as_judge.py` (LLM-судья по сгенерированным вопросам). "
-                    "Оба пишут метрики в тот же Trackio-run, что и обучение (если есть trackio_run.json рядом с адаптером).")
+                    "Оба пишут метрики в ту же ClearML Task, что и обучение (если есть clearml_task.json рядом с адаптером).")
 
         with gr.Row():
             eval_model_dd = gr.Dropdown(choices=list_available_models(), allow_custom_value=True,
@@ -518,47 +521,37 @@ def build_eval_tab():
 
 
 # =====================================================================
-# Вкладка 4: Trackio
+# Вкладка 4: ClearML
 # =====================================================================
+# В отличие от Trackio, self-hosted ClearML — отдельный сервер, работающий
+# независимо от app.py. Ничего не поднимаем и не проксируем сами — просто
+# ссылка + попытка встроить в iframe (сработает, если ClearML web-сервер
+# разрешает embedding в X-Frame-Options/CSP; если нет — просто открой по ссылке).
 
-_TRACKIO_STATE: dict[str, int | None] = {"port": None}
+def clearml_web_host() -> str | None:
+    return os.environ.get("CLEARML_WEB_HOST")
 
 
-def open_trackio_dashboard(request: gr.Request):
-    import urllib.parse
-
-    if _TRACKIO_STATE["port"] is None:
-        import trackio
-        # host="0.0.0.0" — иначе Trackio слушает только 127.0.0.1 и снаружи
-        # (с другой машины) до него не достучаться, даже если основной
-        # app.py открыт на 0.0.0.0. Возвращает (server, local_url,
-        # share_url, full_url); full_url несёт write_token (право
-        # писать/удалять run'ы) — для просмотра в iframe он не нужен.
-        _server, local_url, _share_url, _full_url = trackio.show(
-            project=TRACKIO_PROJECT, open_browser=False, block_thread=False,
-            host="0.0.0.0",
-        )
-        _TRACKIO_STATE["port"] = urllib.parse.urlparse(local_url).port
-
-    # Хост берём из заголовка запроса, которым реально открыли app.py в
-    # браузере (например IP сервера), а не 127.0.0.1 из local_url — иначе
-    # с удалённого ноутбука iframe будет стучаться в свой собственный localhost.
-    browser_host = request.headers.get("host", "127.0.0.1:7860").split(":")[0]
-    url = f"http://{browser_host}:{_TRACKIO_STATE['port']}/?project={TRACKIO_PROJECT}"
-
+def open_clearml_dashboard():
+    web_host = clearml_web_host()
+    if not web_host:
+        return ('<p>Не задан <code>CLEARML_WEB_HOST</code> в .env — укажи адрес веб-интерфейса '
+               'твоего self-hosted ClearML-сервера (например http://10.x.x.x:8080) и перезапусти app.py.</p>')
+    url = web_host.rstrip("/")
     html = (f'<iframe src="{url}" style="width:100%; height:80vh; border:none;"></iframe>'
-           f'<p>Если дашборд не открылся во фрейме — <a href="{url}" target="_blank">открыть в новой вкладке</a>. '
-           f'Если не открывается вообще — проверь, что порт {_TRACKIO_STATE["port"]} '
-           f'разрешён в firewall сервера (как и {7860}).</p>')
+           f'<p>Если дашборд не открылся во фрейме (ClearML может запрещать embedding) — '
+           f'<a href="{url}" target="_blank">открыть в новой вкладке</a>. '
+           f'Ищи проект <code>{CLEARML_PROJECT}</code> — там обучение + bertscore + judge для всех моделей.</p>')
     return html
 
 
-def build_trackio_tab():
-    with gr.Tab("📊 Trackio"):
-        gr.Markdown("Все прогоны обучения + BERTScore + LLM-as-judge из одного проекта Trackio.")
-        open_btn = gr.Button("Открыть/обновить дашборд", variant="primary")
+def build_clearml_tab():
+    with gr.Tab("📊 ClearML"):
+        gr.Markdown(f"Все прогоны обучения + BERTScore + LLM-as-judge — проект `{CLEARML_PROJECT}` "
+                    "на self-hosted ClearML-сервере.")
+        open_btn = gr.Button("Открыть дашборд", variant="primary")
         frame = gr.HTML()
-        open_btn.click(open_trackio_dashboard, None, frame)
+        open_btn.click(open_clearml_dashboard, None, frame)
 
 
 # =====================================================================
@@ -568,7 +561,7 @@ with gr.Blocks(title="LoRA Finetuning Studio") as demo:
     build_chat_tab()
     build_train_tab()
     build_eval_tab()
-    build_trackio_tab()
+    build_clearml_tab()
 
 demo.queue()
 
