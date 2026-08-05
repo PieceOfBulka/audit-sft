@@ -1,11 +1,9 @@
 import argparse
 import os
-import sqlite3
 import sys
 import time
 import torch
 import json
-from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,7 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from openai import OpenAI
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-import trackio
+import wandb
 
 from lora_peft.sft_lora_peft import pick_device, torch_dtype
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_JUDGE, DOMAIN_SYSTEM_PROMPTS, Judgement,
@@ -253,72 +251,6 @@ def parse_judge_json(raw: str) -> dict:
         }
 
 
-def _trackio_db_path(project: str) -> Path:
-    trackio_dir = os.environ.get("TRACKIO_DIR")
-    if trackio_dir:
-        base = Path(trackio_dir)
-    else:
-        hf_home = os.environ.get("HF_HOME") or str(Path.home() / ".cache" / "huggingface")
-        base = Path(hf_home) / "trackio"
-    return base / f"{project}.db"
-
-
-def should_log_judge_avg(project: str, run_name: str, n: int, metric_key: str,
-                         num_samples_key: str) -> bool:
-    """Судью на одном и том же адаптере часто гоняют по нескольку раз — при
-    каждом запуске trackio.log() добавляет НОВУЮ строку среднего, и вместо
-    одного столбика на графике накапливается россыпь/линия точек за разные
-    прогоны. Вместо слепой перезаписи сравниваем по числу примеров (n):
-    прогон с БОЛЬШИМ n статистически надёжнее, поэтому именно он должен
-    остаться единственным. Если у уже залогированного среднего примеров
-    больше или столько же — новую (менее значимую) точку не пишем вообще.
-    Если меньше — удаляем старые строки и разрешаем запись новой.
-
-    metric_key ищется по точному ключу JSON (не по грубой подстроке!) —
-    иначе '%judge_faithfulness_avg%' совпал бы и с 'judge_faithfulness_avg_train',
-    смешивая test- и train-прогоны в одном сравнении, хотя это разные метрики."""
-    db_path = _trackio_db_path(project)
-    if not db_path.is_file():
-        return True  # ещё ничего не залогировано -> писать можно
-
-    conn = sqlite3.connect(db_path)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT id, metrics FROM metrics WHERE run_name = ? AND metrics LIKE ?",
-            (run_name, f'%"{metric_key}":%'),
-        )
-        rows = cur.fetchall()
-        if not rows:
-            return True
-
-        max_prev_n = 0
-        row_ids = []
-        for row_id, metrics_json in rows:
-            try:
-                data = json.loads(metrics_json)
-            except json.JSONDecodeError:
-                continue
-            if metric_key not in data:  # LIKE мог зацепить лишнее -> перепроверяем точно
-                continue
-            row_ids.append(row_id)
-            max_prev_n = max(max_prev_n, data.get(num_samples_key, 0))
-
-        if max_prev_n >= n:
-            print(f"== пропускаю запись среднего в Trackio: у уже сохранённого прогона "
-                  f"{max_prev_n} примеров (>= {n} у текущего) — оставляю более статистически "
-                  "значимый результат нетронутым")
-            return False
-
-        cur.executemany("DELETE FROM metrics WHERE id = ?", [(i,) for i in row_ids])
-        conn.commit()
-        print(f"== удалил {len(row_ids)} старых строк среднего в Trackio (было {max_prev_n} "
-              f"примеров, у нового прогона {n} — записываю новое)")
-        return True
-    finally:
-        conn.close()
-
-
 def main():
     args = parse_args()
     device = pick_device()
@@ -349,12 +281,22 @@ def main():
         )
 
     run_meta = load_run_meta(args.adapter) if args.lora else None
+    wandb_run = None
     if run_meta:
-        trackio.init(project=run_meta["project"], name=run_meta["run_name"], resume="must")
-        print(f"== метрики judge будут дописаны в Trackio-run '{run_meta['run_name']}'")
+        wandb_run = wandb.init(project=run_meta["project"], id=run_meta["run_id"], resume="must")
+        # Свой x-metric для построчных оценок ниже — если оставить дефолтный
+        # общий step-счётчик run'а, он уже стоит там, где его оставил
+        # finetune.py (последний optimizer-шаг), и wandb молча дропает/сливает
+        # точки со step меньше текущего, так что линия по iteration=1,2,3...
+        # просто не появилась бы. define_metric даёт этим трём метрикам
+        # собственную ось, независимую от train/global_step.
+        wandb.define_metric("judge_iteration")
+        for _name in ("judge_faithfulness", "judge_completeness", "judge_consciousness"):
+            wandb.define_metric(f"{_name}{metric_suffix}", step_metric="judge_iteration")
+        print(f"== метрики judge будут дописаны в W&B run '{run_meta['run_name']}'")
     elif args.lora:
-        print(f"== {os.path.join(args.adapter, 'trackio_run.json')} не найден — "
-              "пропускаю логирование в Trackio (адаптер обучен без finetune.py?)")
+        print(f"== {os.path.join(args.adapter, 'wandb_run.json')} не найден — "
+              "пропускаю логирование в W&B (адаптер обучен без finetune.py?)")
 
     result_dir = f"judgements/judge_{slug(args.judge_model)}"
     os.makedirs(result_dir, exist_ok=True)
@@ -413,16 +355,18 @@ def main():
             reply_times.append(reply_time)
             judge_times.append(judge_time)
 
-            if run_meta:
+            if wandb_run:
                 # Построчные оценки — как менялась оценка от примера к примеру
                 # внутри ЭТОГО прогона (не путать с judge_*_avg ниже — та метрика
                 # для сравнения МЕЖДУ моделями/run'ами, эта — для просмотра
-                # разброса ВНУТРИ одного прогона).
-                trackio.log({
+                # разброса ВНУТРИ одного прогона). x-ось — judge_iteration
+                # (см. define_metric выше), а не wandb'овский общий step.
+                wandb.log({
                     f"judge_faithfulness{metric_suffix}": faithfulness,
                     f"judge_completeness{metric_suffix}": completeness,
                     f"judge_consciousness{metric_suffix}": consciousness,
-                }, step=iteration)
+                    "judge_iteration": iteration,
+                })
 
             entries.append(
                 '\n==============' +
@@ -462,37 +406,30 @@ def main():
                 f.write('#' * 60 + '\n')
                 f.write(''.join(entries))
 
-            avg_key = f"judge_faithfulness_avg{metric_suffix}"
-            n_key = f"judge_num_samples{metric_suffix}"
-            if run_meta and should_log_judge_avg(run_meta["project"], run_meta["run_name"], n,
-                                                 avg_key, n_key):
-                # step=0 ЖЁСТКО, а не "трекио сам разберётся": Run.log() без
-                # явного step берёт self._next_step, который при resume="must"
-                # продолжается с максимума, уже сохранённого в БД для этого run'а
-                # (см. trackio/run.py: self._next_step = 0 if max_step is None
-                # else max_step + 1). Значит при повторном запуске судьи на том
-                # же адаптере среднее каждый раз улетало бы на новый, всё больший
-                # step — и дашборд рисовал бы через несколько запусков линию
-                # вместо одного столбика. Фиксируя step=0 + should_log_judge_avg
-                # (удаляет старую строку среднего, только если у неё МЕНЬШЕ
-                # примеров, чем у текущего прогона), на графике всегда остаётся
-                # ровно одна, самая статистически значимая точка на run.
-                trackio.log({
-                    avg_key: round(avg_faithfulness, 3),
-                    f"judge_completeness_avg{metric_suffix}": round(avg_completeness, 3),
-                    f"judge_consciousness_avg{metric_suffix}": round(avg_consciousness, 3),
-                    n_key: n,
-                    f"judge_reply_time_avg_sec{metric_suffix}": round(sum(reply_times) / n, 2),
-                    f"judge_eval_time_avg_sec{metric_suffix}": round(sum(judge_times) / n, 2),
-                }, step=0)
+            if wandb_run:
+                # run.summary, а не wandb.log(): одно сравнимое число на run
+                # (аналог bar-графика), полностью отдельно от per-example
+                # метрик выше (свой ключ, не смешивается со step-линией по
+                # judge_iteration). Судью на одном адаптере часто гоняют по
+                # нескольку раз — присваивание в summary просто перезаписывает
+                # предыдущее значение, а не копит строки истории, так что
+                # трекио-style ручная дедупликация (сравнение n со старым
+                # прогоном, удаление более старых строк) тут не нужна вовсе.
+                wandb_run.summary[f"judge_faithfulness_avg{metric_suffix}"] = round(avg_faithfulness, 3)
+                wandb_run.summary[f"judge_completeness_avg{metric_suffix}"] = round(avg_completeness, 3)
+                wandb_run.summary[f"judge_consciousness_avg{metric_suffix}"] = round(avg_consciousness, 3)
+                wandb_run.summary[f"judge_num_samples{metric_suffix}"] = n
+                wandb_run.summary[f"judge_reply_time_avg_sec{metric_suffix}"] = round(sum(reply_times) / n, 2)
+                wandb_run.summary[f"judge_eval_time_avg_sec{metric_suffix}"] = round(sum(judge_times) / n, 2)
 
-        if run_meta:
+        if wandb_run:
             if os.path.isfile(result_file):
-                trackio.log_artifact(result_file,
-                                     name=f"{run_meta['run_name']}-judge-report{metric_suffix}",
-                                     type="report")
-                print(f"== репорт судьи сохранён как artifact в Trackio: {result_file}")
-            trackio.finish()
+                artifact = wandb.Artifact(name=f"{run_meta['run_name']}-judge-report{metric_suffix}",
+                                          type="report")
+                artifact.add_file(result_file)
+                wandb.log_artifact(artifact)
+                print(f"== репорт судьи сохранён как artifact в W&B: {result_file}")
+            wandb.finish()
 
 if __name__=='__main__':
     main()

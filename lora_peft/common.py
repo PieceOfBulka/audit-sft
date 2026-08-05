@@ -12,14 +12,15 @@ import torch
 from transformers import TrainerCallback, TrainingArguments
 from pydantic import BaseModel
 
-# Единый проект Trackio для всех LoRA-экспериментов — так все run'ы видны
-# рядом в одном дашборде вне зависимости от домена/модели.
-TRACKIO_PROJECT = "lora-finetuning"
+# Единый проект Weights & Biases для всех LoRA-экспериментов — так все run'ы
+# видны рядом в одном дашборде вне зависимости от домена/модели.
+WANDB_PROJECT = "lora-finetuning"
 
-# Имя файла с метаданными run'а, который сохраняется рядом с адаптером,
-# чтобы evaluate.py/llm_as_judge.py могли переоткрыть тот же Trackio-run
-# (resume="must"), не зная и не пересобирая гиперпараметры заново.
-RUN_META_FILENAME = "trackio_run.json"
+# Имя файла с метаданными run'а, который сохраняется рядом с адаптером, чтобы
+# evaluate.py/llm_as_judge.py могли переоткрыть тот же W&B run
+# (wandb.init(id=run_id, resume="must")). Нужен именно run_id, а не имя —
+# в отличие от Trackio, run.name в W&B не уникален (уникален только run.id).
+RUN_META_FILENAME = "wandb_run.json"
 
 
 def pick_device() -> str:
@@ -49,12 +50,13 @@ def build_run_name(domain_or_label: str, model_name: str, rank: int, alpha: int,
     return f"{slug(domain_or_label)}_{slug(model_name)}_r{rank}a{alpha}_ep{epochs}_lr{lr:g}"
 
 
-def save_run_meta(adapter_dir: str, run_name: str) -> None:
-    """Пишет trackio_run.json рядом с адаптером — чтобы оценочные скрипты
-    могли дописывать метрики в тот же run, который создал finetune.py."""
+def save_run_meta(adapter_dir: str, run_id: str, run_name: str) -> None:
+    """Пишет wandb_run.json рядом с адаптером — чтобы оценочные скрипты
+    могли дописывать метрики в тот же W&B run, который создал finetune.py."""
     os.makedirs(adapter_dir, exist_ok=True)
     with open(os.path.join(adapter_dir, RUN_META_FILENAME), "w", encoding="utf-8") as fh:
-        json.dump({"project": TRACKIO_PROJECT, "run_name": run_name}, fh, ensure_ascii=False)
+        json.dump({"project": WANDB_PROJECT, "run_id": run_id, "run_name": run_name},
+                  fh, ensure_ascii=False)
 
 
 def load_run_meta(adapter_dir: str) -> dict | None:

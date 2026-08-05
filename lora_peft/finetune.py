@@ -28,15 +28,21 @@ from unsloth import FastLanguageModel  # должен импортировать
 
 import torch
 from transformers import DataCollatorForSeq2Seq, Trainer
+from dotenv import load_dotenv
 
-import trackio
+import wandb
 
 from load_dataset import load_train_eval_dataset
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
-                               TRACKIO_PROJECT, TimingCallback, build_run_name,
+                               WANDB_PROJECT, TimingCallback, build_run_name,
                                build_training_arguments, make_tokenize_fn,
                                pick_device, resolve_model_dir,
                                save_run_meta, slug)
+
+# Без этого WANDB_API_KEY/WANDB_ENTITY из .env не попадают в os.environ при
+# прямом запуске `python lora_peft/finetune.py` (через app.py сработало бы
+# само, т.к. app.py грузит .env и передаёт своё окружение в subprocess).
+load_dotenv()
 
 
 def parse_args() -> argparse.Namespace:
@@ -113,11 +119,14 @@ def main():
 
     run_label = args.adapter_name or args.domain or os.path.basename(adapter_dir)
     run_name = build_run_name(run_label, args.model, args.rank, args.alpha, args.epochs, args.lr)
-    # Не вызываем trackio.init() тут вручную: Trainer с report_to="trackio"
-    # сам создаёт run через TrackioCallback (используя project=/run_name= из
-    # TrainingArguments ниже) и сам закрывает его в on_train_end. Ручной init
-    # здесь создавал ВТОРОЙ, лишний run, а к моменту log_artifact() ниже
-    # run уже был закрыт колбэком — оттуда и "Call trackio.init() before...".
+
+    # WandbCallback (report_to="wandb") запускает run сам только если
+    # wandb.run is None (см. WandbCallback.setup в transformers/integrations)
+    # — раз мы уже открыли run здесь заранее, колбэк просто подключится к
+    # нему и НЕ станет закрывать его в on_train_end (в отличие от Trackio,
+    # у WandbCallback такого вызова нет вовсе), поэтому держим ссылку до
+    # конца main() и закрываем сами.
+    run = wandb.init(project=WANDB_PROJECT, name=run_name)
 
     print(f"== device={device} | model={model_dir} | dataset={dataset_path}")
     print(f"== LoRA: rank={args.rank} alpha={args.alpha} dropout={args.lora_dropout} "
@@ -172,8 +181,7 @@ def main():
         load_best_model_at_end=args.load_best_model_at_end,
         metric_for_best_model="eval_loss" if args.load_best_model_at_end else None,
         optim="adamw_8bit",
-        report_to="trackio",
-        project=TRACKIO_PROJECT,
+        report_to="wandb",
         run_name=run_name,
         dataloader_pin_memory=(device == "cuda"),
     )
@@ -196,15 +204,15 @@ def main():
     tokenizer.save_pretrained(adapter_dir)
 
     # Метаданные run'а — чтобы evaluate.py/llm_as_judge.py дописывали метрики
-    # оценки (bertscore, judge, время) в тот же Trackio-run, не заводя новый.
-    save_run_meta(adapter_dir, run_name)
+    # оценки (bertscore, judge, время) в тот же W&B run, не заводя новый.
+    save_run_meta(adapter_dir, run.id, run_name)
 
-    # TrackioCallback уже закрыл run в on_train_end — переоткрываем его же
-    # (resume="must": ошибка, если вдруг run с таким именем не найден, а не
-    # тихое создание нового) только чтобы приложить адаптер как artifact.
-    trackio.init(project=TRACKIO_PROJECT, name=run_name, resume="must")
-    trackio.log_artifact(adapter_dir, name=f"{run_name}-adapter", type="model")
-    trackio.finish()
+    # run не был закрыт WandbCallback (мы его открыли заранее) — прикладываем
+    # адаптер как artifact и закрываем run сами.
+    artifact = wandb.Artifact(name=f"{run_name}-adapter", type="model")
+    artifact.add_dir(adapter_dir)
+    wandb.log_artifact(artifact)
+    wandb.finish()
 
 
 if __name__ == "__main__":

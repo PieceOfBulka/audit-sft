@@ -9,6 +9,5 @@ mlx-lm[train]
 openai
 dotenv
 unsloth
-trackio
-nvidia-ml-py  # даёт Trackio auto_log_gpu на CUDA; на Mac просто не найдёт GPU, безвредно
+wandb         # трекинг экспериментов (заменяет trackio); GPU-метрики логирует сам, без доп. пакетов
 pydantic      # lora_peft/common.py::Judgement

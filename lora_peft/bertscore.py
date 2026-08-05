@@ -15,8 +15,8 @@
 Результаты по умолчанию сохраняются в bertscores/<модель>_<датасет>.json
 (например bertscores/Qwen_Qwen3-8B_zakupki.json); переопределить путь можно
 через --out, либо только каталог через --out-dir. Если рядом с адаптером есть
-trackio_run.json (создаётся finetune.py) — метрики и время дописываются в тот
-же Trackio-run, что и обучение.
+wandb_run.json (создаётся finetune.py) — метрики и время дописываются в тот
+же W&B run, что и обучение.
 """
 import argparse
 import json
@@ -27,12 +27,17 @@ import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
-import trackio
+from dotenv import load_dotenv
+import wandb
 
 from load_dataset import load_train_eval_dataset
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                build_user_content, load_run_meta, pick_device,
                                resolve_model_dir, silence_max_length_warning, slug)
+
+# Без этого WANDB_API_KEY/WANDB_ENTITY из .env не попадают в os.environ при
+# прямом запуске `python lora_peft/bertscore.py` (см. finetune.py).
+load_dotenv()
 
 
 def parse_args() -> argparse.Namespace:
@@ -254,21 +259,23 @@ def main():
             # перезаписывал/не путался с основной test-метрикой на том же графике —
             # это два разных числа, которые осмысленно сравнивать бок о бок.
             suffix = "" if args.eval_on == "test" else f"_{args.eval_on}"
-            trackio.init(project=run_meta["project"], name=run_meta["run_name"], resume="must")
-            trackio.log({
-                f"bertscore_precision{suffix}": result["precision"],
-                f"bertscore_recall{suffix}": result["recall"],
-                f"bertscore_f1{suffix}": result["f1"],
-                f"bertscore_generation_time_sec{suffix}": result["generation_time_sec"],
-                f"bertscore_time_sec{suffix}": result["bertscore_time_sec"],
-                f"bertscore_total_eval_time_sec{suffix}": result["total_eval_time_sec"],
-                f"bertscore_sec_per_example{suffix}": result["sec_per_example"],
-            })
-            trackio.finish()
-            print(f"== метрики дописаны в Trackio-run '{run_meta['run_name']}'")
+            run = wandb.init(project=run_meta["project"], id=run_meta["run_id"], resume="must")
+            # run.summary, а не wandb.log(): это одно сравнимое значение на run
+            # (аналог bar-графика в таблице сравнения run'ов W&B), а не точка на
+            # линии — wandb.log() тут сдвинула бы общий step-счётчик run'а дальше
+            # хвоста training-кривой без всякого смысла для одиночного числа.
+            run.summary[f"bertscore_precision{suffix}"] = result["precision"]
+            run.summary[f"bertscore_recall{suffix}"] = result["recall"]
+            run.summary[f"bertscore_f1{suffix}"] = result["f1"]
+            run.summary[f"bertscore_generation_time_sec{suffix}"] = result["generation_time_sec"]
+            run.summary[f"bertscore_time_sec{suffix}"] = result["bertscore_time_sec"]
+            run.summary[f"bertscore_total_eval_time_sec{suffix}"] = result["total_eval_time_sec"]
+            run.summary[f"bertscore_sec_per_example{suffix}"] = result["sec_per_example"]
+            wandb.finish()
+            print(f"== метрики дописаны в W&B run '{run_meta['run_name']}'")
         else:
-            print(f"== {os.path.join(args.adapter, 'trackio_run.json')} не найден — "
-                  "пропускаю логирование в Trackio (адаптер обучен без finetune.py?)")
+            print(f"== {os.path.join(args.adapter, 'wandb_run.json')} не найден — "
+                  "пропускаю логирование в W&B (адаптер обучен без finetune.py?)")
 
 
 if __name__ == "__main__":

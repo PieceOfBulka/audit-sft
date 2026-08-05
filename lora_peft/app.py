@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Единый Gradio-интерфейс: чат/сравнение моделей + запуск обучения + Trackio.
+"""Единый Gradio-интерфейс: чат/сравнение моделей + запуск обучения + W&B.
 
 Три вкладки:
   1. Чат / Сравнение — выбор модели+адаптера, обычный чат или split-screen
      сравнение (база vs дообученная).
   2. Обучение — запуск lora_peft/finetune.py с выбором модели, LoRA-параметров
      и датасета (существующего или только что загруженного).
-  3. Trackio — встроенный дашборд экспериментов (обучение + bertscore + judge).
+  3. W&B — ссылка на дашборд Weights & Biases (обучение + bertscore + judge
+     в одном проекте). W&B — облачный сервис (или self-hosted W&B Server),
+     работающий независимо от этого процесса — здесь просто ссылка, ничего
+     не поднимаем сами.
 
 Запуск из корня репозитория:
     python lora_peft/app.py
@@ -29,7 +32,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 from peft import PeftModel
 
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
-                               TRACKIO_PROJECT, list_available_adapters,
+                               WANDB_PROJECT, list_available_adapters,
                                list_available_models, pick_device,
                                resolve_model_dir, silence_max_length_warning)
 
@@ -466,7 +469,7 @@ def build_eval_tab():
     with gr.Tab("📈 Оценка"):
         gr.Markdown("Оценка модели/адаптера через `bertscore.py` (метрика к эталонным ответам) "
                     "и `llm_as_judge.py` (LLM-судья по сгенерированным вопросам). "
-                    "Оба пишут метрики в тот же Trackio-run, что и обучение (если есть trackio_run.json рядом с адаптером).")
+                    "Оба пишут метрики в тот же W&B run, что и обучение (если есть wandb_run.json рядом с адаптером).")
 
         with gr.Row():
             eval_model_dd = gr.Dropdown(choices=list_available_models(), allow_custom_value=True,
@@ -524,47 +527,39 @@ def build_eval_tab():
 
 
 # =====================================================================
-# Вкладка 4: Trackio
+# Вкладка 4: W&B
 # =====================================================================
+# W&B (облачный wandb.ai или self-hosted W&B Server) — отдельный сервис,
+# работающий независимо от app.py. Ничего не поднимаем и не проксируем сами —
+# просто ссылка + попытка встроить в iframe (сработает, если W&B разрешает
+# embedding в X-Frame-Options/CSP; если нет — просто открой по ссылке).
 
-_TRACKIO_STATE: dict[str, int | None] = {"port": None}
+def wandb_dashboard_url() -> str | None:
+    entity = os.environ.get("WANDB_ENTITY")
+    if not entity:
+        return None
+    base = os.environ.get("WANDB_BASE_URL", "https://wandb.ai").rstrip("/")
+    return f"{base}/{entity}/{WANDB_PROJECT}"
 
 
-def open_trackio_dashboard(request: gr.Request):
-    import urllib.parse
-
-    if _TRACKIO_STATE["port"] is None:
-        import trackio
-        # host="0.0.0.0" — иначе Trackio слушает только 127.0.0.1 и снаружи
-        # (с другой машины) до него не достучаться, даже если основной
-        # app.py открыт на 0.0.0.0. Возвращает (server, local_url,
-        # share_url, full_url); full_url несёт write_token (право
-        # писать/удалять run'ы) — для просмотра в iframe он не нужен.
-        _server, local_url, _share_url, _full_url = trackio.show(
-            project=TRACKIO_PROJECT, open_browser=False, block_thread=False,
-            host="0.0.0.0",
-        )
-        _TRACKIO_STATE["port"] = urllib.parse.urlparse(local_url).port
-
-    # Хост берём из заголовка запроса, которым реально открыли app.py в
-    # браузере (например IP сервера), а не 127.0.0.1 из local_url — иначе
-    # с удалённого ноутбука iframe будет стучаться в свой собственный localhost.
-    browser_host = request.headers.get("host", "127.0.0.1:7860").split(":")[0]
-    url = f"http://{browser_host}:{_TRACKIO_STATE['port']}/?project={TRACKIO_PROJECT}"
-
+def open_wandb_dashboard():
+    url = wandb_dashboard_url()
+    if not url:
+        return ('<p>Не задан <code>WANDB_ENTITY</code> в .env — укажи имя пользователя/команды '
+               'W&B (то, что стоит после wandb.ai/ в адресе твоего профиля) и перезапусти app.py.</p>')
     html = (f'<iframe src="{url}" style="width:100%; height:80vh; border:none;"></iframe>'
-           f'<p>Если дашборд не открылся во фрейме — <a href="{url}" target="_blank">открыть в новой вкладке</a>. '
-           f'Если не открывается вообще — проверь, что порт {_TRACKIO_STATE["port"]} '
-           f'разрешён в firewall сервера (как и {7860}).</p>')
+           f'<p>Если дашборд не открылся во фрейме (W&B может запрещать embedding) — '
+           f'<a href="{url}" target="_blank">открыть в новой вкладке</a>. '
+           f'Ищи проект <code>{WANDB_PROJECT}</code> — там обучение + bertscore + judge для всех моделей.</p>')
     return html
 
 
-def build_trackio_tab():
-    with gr.Tab("📊 Trackio"):
-        gr.Markdown("Все прогоны обучения + BERTScore + LLM-as-judge из одного проекта Trackio.")
-        open_btn = gr.Button("Открыть/обновить дашборд", variant="primary")
+def build_wandb_tab():
+    with gr.Tab("📊 W&B"):
+        gr.Markdown(f"Все прогоны обучения + BERTScore + LLM-as-judge — проект `{WANDB_PROJECT}` в Weights & Biases.")
+        open_btn = gr.Button("Открыть дашборд", variant="primary")
         frame = gr.HTML()
-        open_btn.click(open_trackio_dashboard, None, frame)
+        open_btn.click(open_wandb_dashboard, None, frame)
 
 
 # =====================================================================
@@ -574,7 +569,7 @@ with gr.Blocks(title="LoRA Finetuning Studio") as demo:
     build_chat_tab()
     build_train_tab()
     build_eval_tab()
-    build_trackio_tab()
+    build_wandb_tab()
 
 demo.queue()
 
