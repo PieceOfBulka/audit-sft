@@ -32,7 +32,8 @@ import trackio
 from load_dataset import load_train_eval_dataset
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                build_user_content, load_run_meta, pick_device,
-                               resolve_model_dir, silence_max_length_warning, slug)
+                               resolve_model_dir, should_log_trackio_avg,
+                               silence_max_length_warning, slug)
 
 
 def parse_args() -> argparse.Namespace:
@@ -255,17 +256,28 @@ def main():
             # это два разных числа, которые осмысленно сравнивать бок о бок.
             suffix = "" if args.eval_on == "test" else f"_{args.eval_on}"
             trackio.init(project=run_meta["project"], name=run_meta["run_name"], resume="must")
-            trackio.log({
-                f"bertscore_precision{suffix}": result["precision"],
-                f"bertscore_recall{suffix}": result["recall"],
-                f"bertscore_f1{suffix}": result["f1"],
-                f"bertscore_generation_time_sec{suffix}": result["generation_time_sec"],
-                f"bertscore_time_sec{suffix}": result["bertscore_time_sec"],
-                f"bertscore_total_eval_time_sec{suffix}": result["total_eval_time_sec"],
-                f"bertscore_sec_per_example{suffix}": result["sec_per_example"],
-            })
+
+            f1_key = f"bertscore_f1{suffix}"
+            n_key = f"bertscore_num_samples{suffix}"
+            if should_log_trackio_avg(run_meta["project"], run_meta["run_name"], n, f1_key, n_key):
+                # step=0 ЖЁСТКО + should_log_trackio_avg: без этого повторные
+                # прогоны (например --eval-on test и --eval-on train, или
+                # просто перезапуски) добавляют новую строку метрики на
+                # растущий step, и дашборд рисует линию вместо одного
+                # столбика — тот же баг, что был у llm_as_judge.py.
+                trackio.log({
+                    f"bertscore_precision{suffix}": result["precision"],
+                    f"bertscore_recall{suffix}": result["recall"],
+                    f1_key: result["f1"],
+                    n_key: n,
+                    f"bertscore_generation_time_sec{suffix}": result["generation_time_sec"],
+                    f"bertscore_time_sec{suffix}": result["bertscore_time_sec"],
+                    f"bertscore_total_eval_time_sec{suffix}": result["total_eval_time_sec"],
+                    f"bertscore_sec_per_example{suffix}": result["sec_per_example"],
+                }, step=0)
+                print(f"== метрики дописаны в Trackio-run '{run_meta['run_name']}'")
+
             trackio.finish()
-            print(f"== метрики дописаны в Trackio-run '{run_meta['run_name']}'")
         else:
             print(f"== {os.path.join(args.adapter, 'trackio_run.json')} не найден — "
                   "пропускаю логирование в Trackio (адаптер обучен без finetune.py?)")

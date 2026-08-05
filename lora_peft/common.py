@@ -6,7 +6,9 @@
 import inspect
 import json
 import os
+import sqlite3
 import time
+from pathlib import Path
 
 import torch
 from transformers import TrainerCallback, TrainingArguments
@@ -63,6 +65,73 @@ def load_run_meta(adapter_dir: str) -> dict | None:
         return None
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def _trackio_db_path(project: str) -> Path:
+    trackio_dir = os.environ.get("TRACKIO_DIR")
+    if trackio_dir:
+        base = Path(trackio_dir)
+    else:
+        hf_home = os.environ.get("HF_HOME") or str(Path.home() / ".cache" / "huggingface")
+        base = Path(hf_home) / "trackio"
+    return base / f"{project}.db"
+
+
+def should_log_trackio_avg(project: str, run_name: str, n: int, metric_key: str,
+                           num_samples_key: str) -> bool:
+    """И судью, и BERTScore на одном и том же адаптере часто гоняют по
+    нескольку раз (в т.ч. --eval-on test/train) — при каждом запуске
+    trackio.log() добавляет НОВУЮ строку среднего, и вместо одного столбика
+    на графике накапливается россыпь/линия точек за разные прогоны. Вместо
+    слепой перезаписи сравниваем по числу примеров (n): прогон с БОЛЬШИМ n
+    статистически надёжнее, поэтому именно он должен остаться единственным.
+    Если у уже залогированного среднего примеров больше или столько же —
+    новую (менее значимую) точку не пишем вообще. Если меньше — удаляем
+    старые строки и разрешаем запись новой.
+
+    metric_key ищется по точному ключу JSON (не по грубой подстроке!) —
+    иначе '%judge_faithfulness_avg%' совпал бы и с 'judge_faithfulness_avg_train',
+    смешивая test- и train-прогоны в одном сравнении, хотя это разные метрики."""
+    db_path = _trackio_db_path(project)
+    if not db_path.is_file():
+        return True  # ещё ничего не залогировано -> писать можно
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, metrics FROM metrics WHERE run_name = ? AND metrics LIKE ?",
+            (run_name, f'%"{metric_key}":%'),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return True
+
+        max_prev_n = 0
+        row_ids = []
+        for row_id, metrics_json in rows:
+            try:
+                data = json.loads(metrics_json)
+            except json.JSONDecodeError:
+                continue
+            if metric_key not in data:  # LIKE мог зацепить лишнее -> перепроверяем точно
+                continue
+            row_ids.append(row_id)
+            max_prev_n = max(max_prev_n, data.get(num_samples_key, 0))
+
+        if max_prev_n >= n:
+            print(f"== пропускаю запись среднего в Trackio: у уже сохранённого прогона "
+                  f"{max_prev_n} примеров (>= {n} у текущего) — оставляю более статистически "
+                  "значимый результат нетронутым")
+            return False
+
+        cur.executemany("DELETE FROM metrics WHERE id = ?", [(i,) for i in row_ids])
+        conn.commit()
+        print(f"== удалил {len(row_ids)} старых строк среднего в Trackio (было {max_prev_n} "
+              f"примеров, у нового прогона {n} — записываю новое)")
+        return True
+    finally:
+        conn.close()
 
 
 def resolve_model_dir(model: str) -> str:
