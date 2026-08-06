@@ -11,6 +11,7 @@
 Запуск из корня репозитория:
     python lora_peft/app.py
 """
+import codecs
 import contextlib
 import glob
 import json
@@ -292,11 +293,23 @@ def make_proc_runner():
             return
         log = f"$ {' '.join(cmd)}\n\n"
         yield log
-        proc = subprocess.Popen(cmd, cwd=_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, bufsize=1)
+        # read1() вместо построчного чтения: from_pretrained/tqdm
+        # рисуют прогресс-бар через '\r' без '\n' до самого конца — построчное
+        # чтение (`for line in proc.stdout`) ждало '\n' и не отдавало в UI ни
+        # байта, пока бар не долистает до 100%, из-за чего долгая загрузка
+        # весов/адаптера выглядела как зависание, хотя процесс работал.
+        # read1() возвращает данные сразу после одного системного read(),
+        # не дожидаясь ни `\n`, ни заполнения буфера целиком. ВАЖНО: bufsize
+        # оставляем дефолтным — только тогда subprocess даёт io.BufferedReader
+        # (умеет read1); bufsize=0 даёт "сырой" io.FileIO без read1() вообще.
+        proc = subprocess.Popen(cmd, cwd=_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         holder["proc"] = proc
-        for line in proc.stdout:
-            log += line
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        while True:
+            chunk = proc.stdout.read1(4096)
+            if not chunk:
+                break
+            log += decoder.decode(chunk)
             yield log
         proc.wait()
         log += f"\n== процесс завершён с кодом {proc.returncode}\n"
