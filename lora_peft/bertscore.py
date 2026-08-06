@@ -80,37 +80,13 @@ def default_out_path(out_dir: str, model_name: str, dataset_label: str, adapter_
 
 
 def load_model(args, model_dir, device):
-    """Пытаемся грузить через Unsloth (быстрый inference-путь, только CUDA),
-    иначе — обычный transformers + SDPA-attention (работает везде)."""
-    if device == "cuda":
-        try:
-            from unsloth import FastLanguageModel
-
-            model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name=model_dir,
-                max_seq_length=4096,  # с запасом под prompt+max_new_tokens при генерации
-                dtype=torch.bfloat16,
-                load_in_4bit=False,
-            )
-            if not args.base_only:
-                if not args.adapter:
-                    raise SystemExit("Нужен --adapter (или --base-only для оценки без LoRA)")
-                from peft import PeftModel
-                model = PeftModel.from_pretrained(model, args.adapter)
-                print(f"== LoRA-адаптер загружен из {args.adapter} (Unsloth backend)")
-            else:
-                print("== Оценка базовой модели без адаптера (baseline, Unsloth backend)")
-
-            FastLanguageModel.for_inference(model)  # переключает модель в быстрый inference-режим
-            silence_max_length_warning(model)
-
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-            tokenizer.padding_side = "left"
-            return model, tokenizer
-        except ImportError:
-            print("== Unsloth недоступен, откатываюсь на обычный transformers+SDPA")
-
+    """Обычный transformers + SDPA-attention — без Unsloth. FastLanguageModel
+    + сырой PeftModel.from_pretrained() поверх него (для инференса готового
+    адаптера, а не создания нового через get_peft_model) — комбинация, на
+    которой unsloth_zoo подвисал при загрузке адаптера (см. коммит с фиксом
+    зависания bertscore.py). Обучение (finetune.py) этой ветки не касается —
+    там LoRA создаётся через FastLanguageModel.get_peft_model(), а не
+    загружается заново, поэтому там Unsloth остаётся."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
