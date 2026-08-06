@@ -111,7 +111,13 @@ def main():
     if system_prompt is None:
         raise SystemExit("Без --domain нужно явно передать --system-prompt")
 
-    adapter_dir = default_adapter_path(model_name=args.model, dataset_label=args.domain or dataset_path,
+    # dataset_label всегда по --domain, если он задан — иначе по имени файла
+    # датасета (без пути и расширения), а не по всему пути: иначе один и тот
+    # же --domain, вызванный то через --domain, то напрямую через --dataset
+    # с тем же файлом, давал бы РАЗНЫЕ папки адаптера и run_name, из-за
+    # чего bertscore.py/llm_as_judge.py потом не находили mlflow_run.json.
+    dataset_label = args.domain or os.path.splitext(os.path.basename(dataset_path))[0]
+    adapter_dir = default_adapter_path(model_name=args.model, dataset_label=dataset_label,
                                        adapter_name=args.adapter_name)
 
     device = pick_device()
