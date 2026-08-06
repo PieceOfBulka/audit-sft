@@ -81,14 +81,20 @@ def parse_args() -> argparse.Namespace:
     # --- вывод ---
     p.add_argument("--output-dir", default="./lora")
     p.add_argument("--adapter-name", default=None,
-                   help="Подкаталог в ./lora-adapter/<name>. По умолчанию — --domain или 'default'")
+                   help="Подкаталог в ./lora-adapter/<name> — фиксированное имя, каждый запуск "
+                        "перезаписывает тот же адаптер. Без него имя папки включает гиперпараметры "
+                        "(rank/alpha/lr/epochs), так что разные комбинации не затирают друг друга")
 
     return p.parse_args()
 
-def default_adapter_path(model_name: str, dataset_label: str, adapter_name: str) -> str:
+def default_adapter_path(model_name: str, dataset_label: str, adapter_name: str,
+                         rank: int, alpha: int, lr: float, epochs: int) -> str:
     if adapter_name:
         return os.path.join('./lora-adapter', adapter_name)
-    filename = f"{slug(model_name)}_{slug(dataset_label)}_adapter"
+    # Без явного --adapter-name гиперпараметры зашиты в имя папки, иначе
+    # прогон с другим --epochs/--rank/... тихо перезаписал бы предыдущий
+    # адаптер вместо того, чтобы дать сравнить их между собой.
+    filename = f"{slug(model_name)}_{slug(dataset_label)}_r{rank}a{alpha}_lr{lr:g}_ep{epochs}"
     return os.path.join('./lora-adapter', filename)
 
 
@@ -105,14 +111,19 @@ def main():
     if system_prompt is None:
         raise SystemExit("Без --domain нужно явно передать --system-prompt")
 
-    adapter_dir = default_adapter_path(model_name=args.model, dataset_label=dataset_path, adapter_name=args.adapter_name)
+    adapter_dir = default_adapter_path(model_name=args.model, dataset_label=dataset_path,
+                                       adapter_name=args.adapter_name, rank=args.rank,
+                                       alpha=args.alpha, lr=args.lr, epochs=args.epochs)
 
     device = pick_device()
     model_dir = resolve_model_dir(args.model)
     target_modules = [m.strip() for m in args.target_modules.split(",") if m.strip()]
 
-    run_label = args.adapter_name or args.domain or os.path.basename(adapter_dir)
-    run_name = build_run_name(run_label, args.model, args.rank, args.alpha, args.lr)
+    # Без basename(adapter_dir): та папка уже содержит r/a/lr/ep в имени, и
+    # если взять его как label, build_run_name продублировал бы гиперпараметры
+    # в имени run'а дважды.
+    run_label = args.adapter_name or args.domain or os.path.splitext(os.path.basename(dataset_path))[0]
+    run_name = build_run_name(run_label, args.model, args.rank, args.alpha, args.lr, args.epochs)
     # Не вызываем trackio.init() тут вручную: Trainer с report_to="trackio"
     # сам создаёт run через TrackioCallback (используя project=/run_name= из
     # TrainingArguments ниже) и сам закрывает его в on_train_end. Ручной init

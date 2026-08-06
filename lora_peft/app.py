@@ -48,6 +48,15 @@ DEFAULT_SYSTEM_PROMPT = DOMAIN_SYSTEM_PROMPTS.get("audit", "Отвечай на 
 CUSTOM_PROMPT_LABEL = "— свой промпт —"
 
 
+def adapter_choices():
+    """(label, value) вместо голых путей: имя папки уже содержит гиперпараметры
+    (rank/alpha/lr/epochs, см. finetune.py::default_adapter_path), но при
+    выпадающем списке из полных путей это отличие тонет в длинном общем
+    префиксе ./lora-adapter/... — так в списке сразу видна только уникальная
+    часть, а не значение (адаптер как раньше передаётся полным путём)."""
+    return [NO_ADAPTER] + [(os.path.basename(p), p) for p in list_available_adapters()]
+
+
 def _torch_dtype_for(device: str):
     if device == "cuda":
         return torch.bfloat16
@@ -115,7 +124,7 @@ LOADED = LoadedModel()
 
 def refresh_choices():
     models = list_available_models()
-    adapters = [NO_ADAPTER] + list_available_adapters()
+    adapters = adapter_choices()
     return (gr.update(choices=models, value=models[0] if models else None),
             gr.update(choices=adapters, value=NO_ADAPTER))
 
@@ -220,7 +229,7 @@ def build_chat_tab():
         gr.Markdown("Выбери модель и (опционально) LoRA-адаптер, затем нажми **Загрузить модель**.")
         with gr.Row():
             model_dd = gr.Dropdown(choices=list_available_models(), label="Модель (weights/<repo-id>)")
-            adapter_dd = gr.Dropdown(choices=[NO_ADAPTER] + list_available_adapters(),
+            adapter_dd = gr.Dropdown(choices=adapter_choices(),
                                      value=NO_ADAPTER, label="LoRA-адаптер")
             refresh_btn = gr.Button("🔄 Обновить списки")
         with gr.Row():
@@ -484,7 +493,7 @@ def build_eval_tab():
         with gr.Row():
             eval_model_dd = gr.Dropdown(choices=list_available_models(), allow_custom_value=True,
                                         label="Модель")
-            eval_adapter_dd = gr.Dropdown(choices=[NO_ADAPTER] + list_available_adapters(),
+            eval_adapter_dd = gr.Dropdown(choices=adapter_choices(),
                                           value=NO_ADAPTER, label="LoRA-адаптер")
             eval_refresh_btn = gr.Button("🔄")
         eval_dataset_dd = gr.Dropdown(choices=_dataset_choice_names(), label="Датасет (--domain)")
