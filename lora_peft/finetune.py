@@ -89,13 +89,14 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 def default_adapter_path(model_name: str, dataset_label: str, adapter_name: str,
-                         rank: int, alpha: int, lr: float, epochs: int) -> str:
+                         method: str, rank: int, alpha: int, lr: float, epochs: int) -> str:
     if adapter_name:
         return os.path.join('./lora-adapter', adapter_name)
     # Без явного --adapter-name гиперпараметры зашиты в имя папки, иначе
     # прогон с другим --epochs/--rank/... тихо перезаписал бы предыдущий
     # адаптер вместо того, чтобы дать сравнить их между собой.
-    filename = f"{slug(model_name)}_{slug(dataset_label)}_r{rank}a{alpha}_lr{lr:g}_ep{epochs}"
+    method_lowered = {'LoRA':'', 'QLoRA':'qlora', 'Full FT':'fullFT'}[method]
+    filename = f"{method_lowered}_{slug(model_name)}_{slug(dataset_label)}_r{rank}a{alpha}_lr{lr:g}_ep{epochs}"
     return os.path.join('./lora-adapter', filename)
 
 
@@ -113,8 +114,8 @@ def main():
         raise SystemExit("Без --domain нужно явно передать --system-prompt")
 
     adapter_dir = default_adapter_path(model_name=args.model, dataset_label=dataset_path,
-                                       adapter_name=args.adapter_name, rank=args.rank,
-                                       alpha=args.alpha, lr=args.lr, epochs=args.epochs)
+                                       adapter_name=args.adapter_name, method=args.method,
+                                       rank=args.rank, alpha=args.alpha, lr=args.lr, epochs=args.epochs)
 
     device = pick_device()
     model_dir = resolve_model_dir(args.model)
