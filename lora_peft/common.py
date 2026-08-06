@@ -68,6 +68,28 @@ def load_run_meta(adapter_dir: str) -> dict | None:
         return json.load(fh)
 
 
+def detect_finetune_method(adapter_path: str) -> str:
+    """finetune.py::default_adapter_path кодирует метод обучения в префиксе
+    имени папки, когда та создана автоматически (без --adapter-name):
+    'qlora_...' / 'fullFT_...' / без префикса — обычный LoRA.
+
+    Это нужно на этапе оценки/инференса: QLoRA-адаптер обучался поверх базы,
+    квантованной в 4bit, — грузить его на неквантованную (bf16) базу можно
+    (PEFT это не запрещает), но точность не будет совпадать с тем, что видела
+    модель при обучении. Full FT — это вообще не LoRA-адаптер, а чекпоинт
+    всей модели целиком (там нет adapter_config.json), PeftModel.from_pretrained
+    на такой папке просто упадёт с ошибкой — грузить его нужно напрямую.
+
+    Явно заданное через --adapter-name имя такого префикса не содержит —
+    тогда считаем обычный LoRA (наиболее частый случай)."""
+    name = os.path.basename(os.path.normpath(adapter_path)).lower()
+    if name.startswith("qlora"):
+        return "qlora"
+    if name.startswith("fullft"):
+        return "full_ft"
+    return "lora"
+
+
 def _trackio_db_path(project: str) -> Path:
     trackio_dir = os.environ.get("TRACKIO_DIR")
     if trackio_dir:

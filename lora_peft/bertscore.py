@@ -37,9 +37,11 @@ import trackio
 
 from load_dataset import load_train_eval_dataset
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
-                               build_user_content, load_run_meta, pick_device,
-                               resolve_model_dir, should_log_trackio_avg,
-                               silence_max_length_warning, slug)
+                               build_user_content, detect_finetune_method,
+                               load_run_meta, pick_device, resolve_model_dir,
+                               should_log_trackio_avg, silence_max_length_warning, slug)
+
+METHOD_LABELS = {"lora": "LoRA", "qlora": "QLoRA", "full_ft": "Full FT"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -96,25 +98,41 @@ def load_model(args, model_dir, device):
     построчного чтения в app.py::make_proc_runner) — реальный прогресс шёл,
     просто не долетал до консоли/UI. Раз вывод теперь всегда флашится в
     реальном времени, Unsloth-путь вернули: если он всё же где-то реально
-    подвиснет — это будет сразу видно, а не выглядеть немой заморозкой."""
+    подвиснет — это будет сразу видно, а не выглядеть немой заморозкой.
+
+    method определяется по имени папки адаптера (detect_finetune_method) —
+    QLoRA грузит базу в 4bit (та же точность, что видела модель на обучении),
+    Full FT — это чекпоинт всей модели, а не LoRA-адаптер, грузится напрямую
+    без PeftModel."""
+    method = detect_finetune_method(args.adapter) if (args.adapter and not args.base_only) else "lora"
+
     if device == "cuda":
         try:
             from unsloth import FastLanguageModel
 
-            model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name=model_dir,
-                max_seq_length=4096,  # с запасом под prompt+max_new_tokens при генерации
-                dtype=torch.bfloat16,
-                load_in_4bit=False,
-            )
-            if not args.base_only:
-                if not args.adapter:
-                    raise SystemExit("Нужен --adapter (или --base-only для оценки без LoRA)")
-                from peft import PeftModel
-                model = PeftModel.from_pretrained(model, args.adapter)
-                print(f"== LoRA-адаптер загружен из {args.adapter} (Unsloth backend)")
+            if method == "full_ft":
+                model, tokenizer = FastLanguageModel.from_pretrained(
+                    model_name=args.adapter,
+                    max_seq_length=4096,
+                    dtype=torch.bfloat16,
+                    load_in_4bit=False,
+                )
+                print(f"== Full FT чекпоинт загружен напрямую из {args.adapter} (Unsloth backend)")
             else:
-                print("== Оценка базовой модели без адаптера (baseline, Unsloth backend)")
+                model, tokenizer = FastLanguageModel.from_pretrained(
+                    model_name=model_dir,
+                    max_seq_length=4096,  # с запасом под prompt+max_new_tokens при генерации
+                    dtype=torch.bfloat16,
+                    load_in_4bit=(method == "qlora"),
+                )
+                if not args.base_only:
+                    if not args.adapter:
+                        raise SystemExit("Нужен --adapter (или --base-only для оценки без LoRA)")
+                    from peft import PeftModel
+                    model = PeftModel.from_pretrained(model, args.adapter)
+                    print(f"== {METHOD_LABELS[method]}-адаптер загружен из {args.adapter} (Unsloth backend)")
+                else:
+                    print("== Оценка базовой модели без адаптера (baseline, Unsloth backend)")
 
             FastLanguageModel.for_inference(model)  # переключает модель в быстрый inference-режим
             silence_max_length_warning(model)
@@ -128,27 +146,43 @@ def load_model(args, model_dir, device):
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    tokenizer = AutoTokenizer.from_pretrained(args.adapter if method == "full_ft" else model_dir)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"  # decoder-only генерация: паддинг слева
 
     dtype = torch.bfloat16 if device == "cuda" else (
         torch.float16 if device == "mps" else torch.float32)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_dir, dtype=dtype, low_cpu_mem_usage=True, attn_implementation="sdpa"
-    )
 
-    if not args.base_only:
-        if not args.adapter:
-            raise SystemExit("Нужен --adapter (или --base-only для оценки без LoRA)")
-        from peft import PeftModel
-        model = PeftModel.from_pretrained(model, args.adapter)
-        print(f"== LoRA-адаптер загружен из {args.adapter}")
+    if method == "full_ft":
+        model = AutoModelForCausalLM.from_pretrained(
+            args.adapter, dtype=dtype, low_cpu_mem_usage=True, attn_implementation="sdpa"
+        )
+        print(f"== Full FT чекпоинт загружен напрямую из {args.adapter}")
     else:
-        print("== Оценка базовой модели без адаптера (baseline)")
+        quant_kwargs = {}
+        if method == "qlora":
+            if device != "cuda":
+                raise SystemExit("QLoRA-адаптер обучен в 4bit — оценка без Unsloth требует CUDA "
+                                 "(bitsandbytes не поддерживает 4bit на CPU/MPS)")
+            from transformers import BitsAndBytesConfig
+            quant_kwargs = {"quantization_config": BitsAndBytesConfig(
+                load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16), "device_map": {"": 0}}
+        model = AutoModelForCausalLM.from_pretrained(
+            model_dir, dtype=dtype, low_cpu_mem_usage=True, attn_implementation="sdpa", **quant_kwargs
+        )
 
-    model.to(device)
+        if not args.base_only:
+            if not args.adapter:
+                raise SystemExit("Нужен --adapter (или --base-only для оценки без LoRA)")
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(model, args.adapter)
+            print(f"== {METHOD_LABELS[method]}-адаптер загружен из {args.adapter}")
+        else:
+            print("== Оценка базовой модели без адаптера (baseline)")
+
+    if method != "qlora":  # bitsandbytes сам разместил веса через device_map, .to() тут упадёт
+        model.to(device)
     model.eval()
     silence_max_length_warning(model)
     return model, tokenizer

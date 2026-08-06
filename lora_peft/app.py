@@ -30,9 +30,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 from peft import PeftModel
 
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
-                               TRACKIO_PROJECT, list_available_adapters,
-                               list_available_models, pick_device,
-                               resolve_model_dir, silence_max_length_warning)
+                               TRACKIO_PROJECT, detect_finetune_method,
+                               list_available_adapters, list_available_models,
+                               pick_device, resolve_model_dir, silence_max_length_warning)
 
 # Без этого OPENAI_TOKEN/INTERNAL_API_TOKEN из .env не попадают в os.environ
 # этого процесса, и launch_judge() ниже всегда читал бы дефолт "not-needed" —
@@ -92,18 +92,42 @@ class LoadedModel:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        model_dir = resolve_model_dir(model_id)
         dtype = _torch_dtype_for(DEVICE)
-
-        tokenizer = AutoTokenizer.from_pretrained(model_dir)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        model = AutoModelForCausalLM.from_pretrained(model_dir, dtype=dtype, low_cpu_mem_usage=True)
+        # method определяется по имени папки адаптера (см. common.detect_finetune_method
+        # и finetune.py::default_adapter_path): QLoRA грузит базу в 4bit — та же
+        # точность, что видела модель на обучении; Full FT — это чекпоинт всей
+        # модели, а не LoRA-адаптер (нет adapter_config.json), PeftModel.from_pretrained
+        # на такой папке упал бы с ошибкой — грузим её напрямую вместо базы.
+        method = detect_finetune_method(adapter_path) if adapter_path else "lora"
         self.has_adapter = adapter_path is not None
-        if self.has_adapter:
-            model = PeftModel.from_pretrained(model, adapter_path)
-        model.to(DEVICE)
+
+        if method == "full_ft":
+            tokenizer = AutoTokenizer.from_pretrained(adapter_path)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            model = AutoModelForCausalLM.from_pretrained(adapter_path, dtype=dtype, low_cpu_mem_usage=True)
+            model.to(DEVICE)
+        else:
+            model_dir = resolve_model_dir(model_id)
+            tokenizer = AutoTokenizer.from_pretrained(model_dir)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            quant_kwargs = {}
+            if method == "qlora":
+                if DEVICE != "cuda":
+                    raise RuntimeError("QLoRA-адаптер обучен в 4bit — оценка требует CUDA "
+                                       "(bitsandbytes не поддерживает 4bit на CPU/MPS)")
+                from transformers import BitsAndBytesConfig
+                quant_kwargs = {"quantization_config": BitsAndBytesConfig(
+                    load_in_4bit=True, bnb_4bit_compute_dtype=dtype), "device_map": {"": 0}}
+            model = AutoModelForCausalLM.from_pretrained(
+                model_dir, dtype=dtype, low_cpu_mem_usage=True, **quant_kwargs)
+            if self.has_adapter:
+                model = PeftModel.from_pretrained(model, adapter_path)
+            if method != "qlora":  # bitsandbytes сам разместил веса через device_map
+                model.to(DEVICE)
+
         model.eval()
         silence_max_length_warning(model)
 

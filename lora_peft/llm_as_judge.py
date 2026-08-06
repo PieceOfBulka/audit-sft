@@ -20,8 +20,8 @@ import trackio
 
 from lora_peft.sft_lora_peft import pick_device, torch_dtype
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_JUDGE, DOMAIN_SYSTEM_PROMPTS, Judgement,
-                               build_user_content, load_run_meta, should_log_trackio_avg,
-                               silence_max_length_warning, slug)
+                               build_user_content, detect_finetune_method, load_run_meta,
+                               should_log_trackio_avg, silence_max_length_warning, slug)
 from load_dataset import load_train_eval_dataset
 
 load_dotenv()
@@ -92,7 +92,33 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42, help="Seed для --shuffle")
     return p.parse_args()
 
+METHOD_LABELS = {"lora": "LoRA", "qlora": "QLoRA", "full_ft": "Full FT"}
+
+
 def load_model(use_lora: bool, model_path: str, adapter_path: str, device: str):
+    # method определяется по имени папки адаптера (см. common.detect_finetune_method
+    # и finetune.py::default_adapter_path): QLoRA грузит базу в 4bit — та же
+    # точность, что видела модель на обучении; Full FT — это чекпоинт всей
+    # модели, а не LoRA-адаптер, грузится напрямую без PeftModel.
+    method = detect_finetune_method(adapter_path) if use_lora else "lora"
+
+    if method == "full_ft":
+        if not os.path.isdir(adapter_path):
+            print(f"Ошибка: адаптер не найден: {adapter_path}", file=sys.stderr)
+            sys.exit(1)
+        print("Загрузка Full FT чекпоинта (это может занять минуту)...")
+        tokenizer = AutoTokenizer.from_pretrained(adapter_path)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = 'left'
+        model = AutoModelForCausalLM.from_pretrained(
+            adapter_path, dtype=torch_dtype, low_cpu_mem_usage=True
+        )
+        print(f"Full FT чекпоинт загружен напрямую: {adapter_path}")
+        model.to(device)
+        model.eval()
+        return model, tokenizer
+
     if not os.path.isdir(model_path):
             print(f"Ошибка: модель не найдена: {model_path}", file=sys.stderr)
             sys.exit(1)
@@ -103,10 +129,20 @@ def load_model(use_lora: bool, model_path: str, adapter_path: str, device: str):
     tokenizer.padding_side = 'left'
 
     print("Загрузка базовой модели (это может занять минуту)...")
+    quant_kwargs = {}
+    if method == "qlora":
+        if device != "cuda":
+            print("Ошибка: QLoRA-адаптер обучен в 4bit — оценка требует CUDA "
+                  "(bitsandbytes не поддерживает 4bit на CPU/MPS)", file=sys.stderr)
+            sys.exit(1)
+        from transformers import BitsAndBytesConfig
+        quant_kwargs = {"quantization_config": BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_compute_dtype=torch_dtype), "device_map": {"": 0}}
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         dtype=torch_dtype,
-        low_cpu_mem_usage=True
+        low_cpu_mem_usage=True,
+        **quant_kwargs,
     )
 
     if use_lora:
@@ -116,11 +152,12 @@ def load_model(use_lora: bool, model_path: str, adapter_path: str, device: str):
             print(f"Ошибка: адаптер не найден: {adapter_path}", file=sys.stderr)
             sys.exit(1)
         model = PeftModel.from_pretrained(model, adapter_path)
-        print(f"LoRA-адаптер загружен: {adapter_path}")
+        print(f"{METHOD_LABELS[method]}-адаптер загружен: {adapter_path}")
     else:
         print("Режим: базовая модель без LoRA")
 
-    model.to(device)
+    if method != "qlora":  # bitsandbytes сам разместил веса через device_map, .to() тут упадёт
+        model.to(device)
     model.eval()
     silence_max_length_warning(model)
     return model, tokenizer
