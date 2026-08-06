@@ -6,6 +6,11 @@ import torch
 import json
 from dotenv import load_dotenv
 
+# stdout не привязан к терминалу (фон/nohup/из app.py) -> Python буферизует
+# print() блоками вместо построчного вывода, и прогресс не видно, пока буфер
+# не заполнится или процесс не завершится (см. тот же баг у bertscore.py).
+sys.stdout.reconfigure(line_buffering=True)
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from openai import OpenAI
