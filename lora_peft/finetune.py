@@ -55,7 +55,8 @@ def parse_args() -> argparse.Namespace:
                    help="repo-id (ищется в weights/<repo-id>) или готовый путь к весам")
     p.add_argument("--max-seq-length", type=int, default=768)
 
-    # --- LoRA-гиперпараметры ---
+    # --- FT-гиперпараметры ---
+    p.add_argument("--method", choices=['LoRA','QLoRA','Full FT'], default='LoRA')
     p.add_argument("--rank", type=int, default=16)
     p.add_argument("--alpha", type=int, default=32)
     p.add_argument("--lora-dropout", type=float, default=0.0,
@@ -117,13 +118,18 @@ def main():
 
     device = pick_device()
     model_dir = resolve_model_dir(args.model)
-    target_modules = [m.strip() for m in args.target_modules.split(",") if m.strip()]
+
+
+    is_not_fullft = args.method!='Full FT'
+    rank = args.rank if is_not_fullft else None
+    alpha = args.alpha if is_not_fullft else None
+    target_modules = [m.strip() for m in args.target_modules.split(",") if m.strip()] if is_not_fullft else None
 
     # Без basename(adapter_dir): та папка уже содержит r/a/lr/ep в имени, и
     # если взять его как label, build_run_name продублировал бы гиперпараметры
     # в имени run'а дважды.
     run_label = args.adapter_name or args.domain or os.path.splitext(os.path.basename(dataset_path))[0]
-    run_name = build_run_name(run_label, args.model, args.rank, args.alpha, args.lr, args.epochs)
+    run_name = build_run_name(run_label, args.model, rank, alpha, args.lr, args.epochs)
     # Не вызываем trackio.init() тут вручную: Trainer с report_to="trackio"
     # сам создаёт run через TrackioCallback (используя project=/run_name= из
     # TrainingArguments ниже) и сам закрывает его в on_train_end. Ручной init
@@ -131,8 +137,14 @@ def main():
     # run уже был закрыт колбэком — оттуда и "Call trackio.init() before...".
 
     print(f"== device={device} | model={model_dir} | dataset={dataset_path}")
-    print(f"== LoRA: rank={args.rank} alpha={args.alpha} dropout={args.lora_dropout} "
-          f"target_modules={target_modules}")
+    if args.method=='LoRA':
+        print(f"== LoRA: rank={args.rank} alpha={args.alpha} dropout={args.lora_dropout} "
+            f"target_modules={target_modules}")
+    elif args.method=='QLoRA':
+        print(f"== QLoRA: rank={args.rank} alpha={args.alpha} dropout={args.lora_dropout} "
+            f"target_modules={target_modules}")
+    else:
+        print(f"== Full fine-tuning will be trained")
     print(f"== batch={args.batch_size} grad_accum={args.grad_accum_steps} "
           f"(эффективный={args.batch_size * args.grad_accum_steps}) lr={args.lr}")
 
@@ -140,20 +152,21 @@ def main():
         model_name=model_dir,
         max_seq_length=args.max_seq_length,
         dtype=torch.bfloat16,
-        load_in_4bit=False,
-        full_finetuning=False,
+        load_in_4bit=args.method=='QLoRA',
+        full_finetuning=args.method=='Full FT',
     )
 
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=args.rank,
-        target_modules=target_modules,
-        lora_alpha=args.alpha,
-        lora_dropout=args.lora_dropout,
-        bias="none",
-        use_gradient_checkpointing="unsloth",
-        random_state=42,
-    )
+    if is_not_fullft:
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=args.rank,
+            target_modules=target_modules,
+            lora_alpha=args.alpha,
+            lora_dropout=args.lora_dropout,
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+            random_state=42,
+        )
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

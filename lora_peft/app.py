@@ -341,12 +341,13 @@ def _dataset_choice_names():
 _run_training, stop_training = make_proc_runner()
 
 
-def launch_training(model_id, dataset_choice, uploaded_file, custom_system_prompt,
+def launch_training(model_id, dataset_choice, uploaded_file, finetune_method, custom_system_prompt,
                     adapter_name, rank, alpha, dropout, target_modules,
                     lr, batch_size, grad_accum, epochs, warmup_ratio,
                     group_by_length, liger, load_best):
     cmd = [sys.executable, os.path.join(_ROOT, "lora_peft", "finetune.py"),
            "--model", model_id,
+           "--method", finetune_method,
            "--rank", str(rank), "--alpha", str(alpha), "--lora-dropout", str(dropout),
            "--target-modules", ",".join(target_modules) if target_modules else ",".join(ALL_TARGET_MODULES),
            "--lr", str(lr), "--batch-size", str(batch_size),
@@ -392,6 +393,10 @@ def build_train_tab():
         with gr.Row():
             dataset_dd = gr.Dropdown(choices=_dataset_choice_names(), label="Существующий датасет (--domain)")
             upload_file = gr.File(label="…или загрузить новый датасет (.json)", file_types=[".json"])
+
+        with gr.Row():
+            finetune_method = gr.Radio(['LoRA', 'QLoRA', 'Full FT'], value='LoRA', label='Выберите метод дообучения')
+        
         custom_system = gr.Textbox(label="Системный промпт (обязателен для нового датасета)",
                                    lines=2, visible=True)
 
@@ -422,7 +427,7 @@ def build_train_tab():
 
         refresh_models_btn.click(lambda: gr.update(choices=list_available_models()), None, model_dd)
 
-        start_inputs = [model_dd, dataset_dd, upload_file, custom_system, adapter_name,
+        start_inputs = [model_dd, dataset_dd, upload_file, finetune_method, custom_system, adapter_name,
                         rank, alpha, dropout, target_modules, lr, batch_size, grad_accum,
                         epochs, warmup_ratio, group_by_length, liger, load_best]
         start_btn.click(launch_training, start_inputs, log_box)
