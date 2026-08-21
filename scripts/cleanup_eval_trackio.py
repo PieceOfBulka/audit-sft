@@ -17,8 +17,9 @@ learning_rate, epoch, grad_norm, ...) и артефакты адаптеров (
 
 Запуск (на сервере, тем же пользователем, что запускает app.py/train):
     python scripts/cleanup_eval_trackio.py                 # dry-run
-    python scripts/cleanup_eval_trackio.py --apply          # реально удалить
+    python scripts/cleanup_eval_trackio.py --apply          # реально удалить (по всем run'ам)
     python scripts/cleanup_eval_trackio.py --apply --prefix judge_   # только judge, не трогать bertscore
+    python scripts/cleanup_eval_trackio.py --run <run_name> --apply  # только для одного run'а
 """
 import argparse
 import os
@@ -43,6 +44,8 @@ def main():
     p.add_argument("--prefix", action="append", default=None,
                    help="Префикс(ы) метрик для удаления. Можно указать несколько раз. "
                         "По умолчанию: judge_ и bertscore_")
+    p.add_argument("--run", default=None,
+                   help="Ограничить удаление одним run_name. Не задано -> по ВСЕМ run'ам.")
     p.add_argument("--apply", action="store_true",
                    help="Реально удалить. Без этого флага — только dry-run.")
     args = p.parse_args()
@@ -63,21 +66,33 @@ def main():
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
+    scope_note = f" (только run={args.run!r})" if args.run else " (по всем run'ам)"
+
     metric_ids: set[int] = set()
     for prefix in prefixes:
-        cur.execute("SELECT id, run_name, step FROM metrics WHERE metrics LIKE ?", (f"%{prefix}%",))
+        if args.run:
+            cur.execute("SELECT id, run_name, step FROM metrics WHERE metrics LIKE ? AND run_name = ?",
+                       (f"%{prefix}%", args.run))
+        else:
+            cur.execute("SELECT id, run_name, step FROM metrics WHERE metrics LIKE ?", (f"%{prefix}%",))
         rows = cur.fetchall()
-        print(f"\n== метрики с '{prefix}': {len(rows)} строк")
+        print(f"\n== метрики с '{prefix}'{scope_note}: {len(rows)} строк")
         for row in rows[:5]:
             print(f"   run={row['run_name']!r} step={row['step']}")
         if len(rows) > 5:
             print(f"   ... и ещё {len(rows) - 5}")
         metric_ids.update(row["id"] for row in rows)
 
-    # артефакты-репорты (judge), адаптеры (type="model") не трогаем
-    cur.execute("SELECT id, name, type FROM artifacts WHERE type = 'report'")
+    # артефакты-репорты (judge), адаптеры (type="model") не трогаем. Имя
+    # артефакта — "{run_name}-judge-report[_eval_on]" (см. llm_as_judge.py),
+    # поэтому фильтр по run'у — префикс имени, а не отдельная колонка.
+    if args.run:
+        cur.execute("SELECT id, name, type FROM artifacts WHERE type = 'report' AND name LIKE ?",
+                   (f"{args.run}-judge-report%",))
+    else:
+        cur.execute("SELECT id, name, type FROM artifacts WHERE type = 'report'")
     artifact_rows = cur.fetchall()
-    print(f"\n== артефакты type='report': {len(artifact_rows)}")
+    print(f"\n== артефакты type='report'{scope_note}: {len(artifact_rows)}")
     for row in artifact_rows:
         print(f"   id={row['id']} name={row['name']!r}")
 
