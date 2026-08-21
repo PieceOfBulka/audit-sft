@@ -151,8 +151,41 @@ def load_model(use_lora: bool, model_path: str, adapter_path: str, device: str):
         if not os.path.isdir(adapter_path):
             print(f"Ошибка: адаптер не найден: {adapter_path}", file=sys.stderr)
             sys.exit(1)
-        model = PeftModel.from_pretrained(model, adapter_path)
-        print(f"{METHOD_LABELS[method]}-адаптер загружен: {adapter_path}")
+        try:
+            model = PeftModel.from_pretrained(model, adapter_path)
+            print(f"{METHOD_LABELS[method]}-адаптер загружен: {adapter_path}")
+        except (ValueError, RuntimeError) as exc:
+            # MoE-модели (например Qwen3-30B-A3B) обучаются через
+            # Unsloth.FastLanguageModel.get_peft_model(), который навешивает
+            # LoRA на mlp.experts своими патчами поверх peft — голый peft
+            # этого не умеет (experts там не nn.Linear, а параметр, слитый
+            # по всем экспертам сразу), отсюда и ValueError выше. Один вызов
+            # FastLanguageModel.from_pretrained(model_name=<путь к адаптеру>)
+            # сам детектит LoRA/QLoRA-адаптер и грузит база+адаптер вместе с
+            # теми же патчами (в отличие от связки "модель через Unsloth +
+            # отдельный PeftModel.from_pretrained()", которая зависала —
+            # см. edf07d3) — поэтому только на CUDA и только как fallback,
+            # не трогаем уже рабочий путь для обычных dense-моделей.
+            if device != "cuda":
+                raise
+            print(f"== голый PeftModel.from_pretrained() упал ({exc}), "
+                  "пробую через Unsloth (похоже на MoE-архитектуру)")
+            del model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            from unsloth import FastLanguageModel
+
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=adapter_path,
+                max_seq_length=4096,  # с запасом под prompt+max_new_tokens при генерации
+                dtype=torch_dtype,
+                load_in_4bit=(method == "qlora"),
+            )
+            FastLanguageModel.for_inference(model)  # быстрый inference-режим
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.padding_side = 'left'
+            print(f"== {METHOD_LABELS[method]}-адаптер загружен через Unsloth: {adapter_path}")
     else:
         print("Режим: базовая модель без LoRA")
 
