@@ -103,7 +103,14 @@ def load_model(args, model_dir, device):
     method определяется по имени папки адаптера (detect_finetune_method) —
     QLoRA грузит базу в 4bit (та же точность, что видела модель на обучении),
     Full FT — это чекпоинт всей модели, а не LoRA-адаптер, грузится напрямую
-    без PeftModel."""
+    без PeftModel.
+
+    LoRA/QLoRA-адаптер под Unsloth грузится ОДНИМ вызовом
+    FastLanguageModel.from_pretrained(model_name=<адаптер>), а не базой +
+    отдельным peft.PeftModel.from_pretrained() поверх — на MoE-моделях
+    (эксперты — не nn.Linear, а слитый по всем экспертам параметр) второй
+    вариант падает без MoE-патчей Unsloth, которые применяются только
+    внутри самого from_pretrained."""
     method = detect_finetune_method(args.adapter) if (args.adapter and not args.base_only) else "lora"
 
     if device == "cuda":
@@ -119,17 +126,22 @@ def load_model(args, model_dir, device):
                 )
                 print(f"== Full FT чекпоинт загружен напрямую из {args.adapter} (Unsloth backend)")
             else:
+                if not args.base_only and not args.adapter:
+                    raise SystemExit("Нужен --adapter (или --base-only для оценки без LoRA)")
+                # Один вызов с model_name=<адаптер> (а не сначала база, потом
+                # ОТДЕЛЬНЫЙ peft.PeftModel.from_pretrained() поверх неё) — на
+                # MoE-моделях (эксперты — не nn.Linear, а параметр, слитый по
+                # всем экспертам сразу) второй вариант падает: MoE-специфичные
+                # патчи Unsloth применяются только внутри самого from_pretrained,
+                # а не сохраняются между двумя отдельными вызовами.
+                load_target = model_dir if args.base_only else args.adapter
                 model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name=model_dir,
+                    model_name=load_target,
                     max_seq_length=4096,  # с запасом под prompt+max_new_tokens при генерации
                     dtype=torch.bfloat16,
                     load_in_4bit=(method == "qlora"),
                 )
                 if not args.base_only:
-                    if not args.adapter:
-                        raise SystemExit("Нужен --adapter (или --base-only для оценки без LoRA)")
-                    from peft import PeftModel
-                    model = PeftModel.from_pretrained(model, args.adapter)
                     print(f"== {METHOD_LABELS[method]}-адаптер загружен из {args.adapter} (Unsloth backend)")
                 else:
                     print("== Оценка базовой модели без адаптера (baseline, Unsloth backend)")
