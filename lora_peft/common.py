@@ -3,6 +3,7 @@
 Используется finetune.py, evaluate.py и llm_as_judge.py, чтобы не дублировать
 логику между разными датасетами/доменами (audit, zakupki, ...).
 """
+import hashlib
 import inspect
 import json
 import os
@@ -52,12 +53,27 @@ def build_run_name(domain_or_label: str, model_name: str, rank: int, alpha: int,
     return f"{slug(domain_or_label)}_{slug(model_name)}_r{rank}a{alpha}_lr{lr:g}_ep{epochs}"
 
 
-def save_run_meta(adapter_dir: str, run_name: str) -> None:
+def hparams_hash(**hparams) -> str:
+    """Короткий хэш от произвольного набора гиперпараметров прогона.
+
+    Используется в finetune.py::default_adapter_path, чтобы ЛЮБОЕ отличие в
+    параметрах (не только rank/alpha/lr/epochs, которые видны в читаемой
+    части имени папки — например target_modules) гарантированно давало
+    другую папку адаптера, а не тихую перезапись предыдущего прогона под
+    тем же именем."""
+    canon = json.dumps(hparams, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:8]
+
+
+def save_run_meta(adapter_dir: str, run_name: str, method: str) -> None:
     """Пишет trackio_run.json рядом с адаптером — чтобы оценочные скрипты
-    могли дописывать метрики в тот же run, который создал finetune.py."""
+    могли дописывать метрики в тот же run, который создал finetune.py, а
+    detect_finetune_method — надёжно (без угадывания по имени папки)
+    понять, LoRA/QLoRA/Full FT ли это."""
     os.makedirs(adapter_dir, exist_ok=True)
     with open(os.path.join(adapter_dir, RUN_META_FILENAME), "w", encoding="utf-8") as fh:
-        json.dump({"project": TRACKIO_PROJECT, "run_name": run_name}, fh, ensure_ascii=False)
+        json.dump({"project": TRACKIO_PROJECT, "run_name": run_name, "method": method},
+                  fh, ensure_ascii=False)
 
 
 def load_run_meta(adapter_dir: str) -> dict | None:
@@ -69,19 +85,27 @@ def load_run_meta(adapter_dir: str) -> dict | None:
 
 
 def detect_finetune_method(adapter_path: str) -> str:
-    """finetune.py::default_adapter_path кодирует метод обучения в префиксе
-    имени папки, когда та создана автоматически (без --adapter-name):
-    'qlora_...' / 'fullFT_...' / без префикса — обычный LoRA.
+    """Определяет, чем обучен адаптер — LoRA/QLoRA/Full FT.
 
-    Это нужно на этапе оценки/инференса: QLoRA-адаптер обучался поверх базы,
-    квантованной в 4bit, — грузить его на неквантованную (bf16) базу можно
-    (PEFT это не запрещает), но точность не будет совпадать с тем, что видела
-    модель при обучении. Full FT — это вообще не LoRA-адаптер, а чекпоинт
-    всей модели целиком (там нет adapter_config.json), PeftModel.from_pretrained
-    на такой папке просто упадёт с ошибкой — грузить его нужно напрямую.
+    Источник истины — поле "method" в trackio_run.json (пишет save_run_meta
+    при обучении). Это нужно на этапе оценки/инференса: QLoRA-адаптер
+    обучался поверх базы, квантованной в 4bit, — грузить его на
+    неквантованную (bf16) базу можно (PEFT это не запрещает), но точность не
+    будет совпадать с тем, что видела модель при обучении. Full FT — это
+    вообще не LoRA-адаптер, а чекпоинт всей модели целиком (там нет
+    adapter_config.json), PeftModel.from_pretrained на такой папке просто
+    упадёт с ошибкой — грузить его нужно напрямую.
 
-    Явно заданное через --adapter-name имя такого префикса не содержит —
-    тогда считаем обычный LoRA (наиболее частый случай)."""
+    Fallback на имя папки — только для адаптеров, обученных до появления
+    "method" в метадате: finetune.py::default_adapter_path кодировала метод
+    в префиксе имени, когда та создана автоматически (без --adapter-name):
+    'qlora_...' / 'fullFT_...' / без префикса — обычный LoRA. При явно
+    заданном --adapter-name такого префикса нет — тогда, как и раньше,
+    считаем обычный LoRA (наиболее частый случай)."""
+    run_meta = load_run_meta(adapter_path)
+    if run_meta and run_meta.get("method"):
+        return run_meta["method"]
+
     name = os.path.basename(os.path.normpath(adapter_path)).lower()
     if name.startswith("qlora"):
         return "qlora"
@@ -190,7 +214,10 @@ def list_available_models(max_depth: int = 3) -> list[str]:
 
 
 def list_available_adapters() -> list[str]:
-    """Сканирует lora-adapter/ (в корне репо) на предмет папок с adapter_config.json."""
+    """Сканирует lora-adapter/ (в корне репо) на предмет LoRA/QLoRA-адаптеров
+    (adapter_config.json — его пишет сам PEFT) и Full FT чекпоинтов (полный
+    дамп модели без adapter_config.json — распознаётся по имени папки через
+    detect_finetune_method, см. её докстринг)."""
     adapter_root = os.path.join(_repo_root(), "lora-adapter")
     found = []
     if not os.path.isdir(adapter_root):
@@ -198,6 +225,9 @@ def list_available_adapters() -> list[str]:
     for name in sorted(os.listdir(adapter_root)):
         path = os.path.join(adapter_root, name)
         if os.path.isfile(os.path.join(path, "adapter_config.json")):
+            found.append(path)
+        elif (detect_finetune_method(path) == "full_ft"
+              and os.path.isfile(os.path.join(path, "config.json"))):
             found.append(path)
     return found
 

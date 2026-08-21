@@ -34,7 +34,7 @@ import trackio
 from load_dataset import load_train_eval_dataset
 from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                TRACKIO_PROJECT, TimingCallback, build_run_name,
-                               build_training_arguments, make_tokenize_fn,
+                               build_training_arguments, hparams_hash, make_tokenize_fn,
                                pick_device, resolve_model_dir,
                                save_run_meta, slug)
 
@@ -89,14 +89,20 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 def default_adapter_path(model_name: str, dataset_label: str, adapter_name: str,
-                         method: str, rank: int, alpha: int, lr: float, epochs: int) -> str:
+                         method: str, rank: int, alpha: int, lr: float, epochs: int,
+                         **other_hparams) -> str:
     if adapter_name:
         return os.path.join('./lora-adapter', adapter_name)
     # Без явного --adapter-name гиперпараметры зашиты в имя папки, иначе
     # прогон с другим --epochs/--rank/... тихо перезаписал бы предыдущий
-    # адаптер вместо того, чтобы дать сравнить их между собой.
+    # адаптер вместо того, чтобы дать сравнить их между собой. rank/alpha/
+    # lr/epochs идут в читаемую часть имени, а hparams_hash() поверх ВСЕХ
+    # параметров (включая то, что не вынесено в имя явно, например
+    # target_modules) гарантирует, что различается вообще любой параметр —
+    # а не только эти четыре.
     method_lowered = {'LoRA':'', 'QLoRA':'qlora', 'Full FT':'fullFT'}[method]
-    filename = f"{method_lowered}_{slug(model_name)}_{slug(dataset_label)}_r{rank}a{alpha}_lr{lr:g}_ep{epochs}"
+    h = hparams_hash(method=method, rank=rank, alpha=alpha, lr=lr, epochs=epochs, **other_hparams)
+    filename = f"{method_lowered}_{slug(model_name)}_{slug(dataset_label)}_r{rank}a{alpha}_lr{lr:g}_ep{epochs}_{h}"
     return os.path.join('./lora-adapter', filename)
 
 
@@ -113,9 +119,18 @@ def main():
     if system_prompt is None:
         raise SystemExit("Без --domain нужно явно передать --system-prompt")
 
-    adapter_dir = default_adapter_path(model_name=args.model, dataset_label=dataset_path,
-                                       adapter_name=args.adapter_name, method=args.method,
-                                       rank=args.rank, alpha=args.alpha, lr=args.lr, epochs=args.epochs)
+    adapter_dir = default_adapter_path(
+        model_name=args.model, dataset_label=dataset_path, adapter_name=args.adapter_name,
+        method=args.method, rank=args.rank, alpha=args.alpha, lr=args.lr, epochs=args.epochs,
+        # Всё, что ниже, не входит в читаемую часть имени папки, но участвует
+        # в hparams_hash() — так что смена ЛЮБОГО из этих параметров тоже
+        # даёт новую папку, а не тихую перезапись.
+        lora_dropout=args.lora_dropout, target_modules=args.target_modules,
+        batch_size=args.batch_size, grad_accum_steps=args.grad_accum_steps,
+        warmup_ratio=args.warmup_ratio, group_by_length=args.group_by_length,
+        liger=args.liger, max_seq_length=args.max_seq_length, eval_steps=args.eval_steps,
+        load_best_model_at_end=args.load_best_model_at_end,
+    )
 
     device = pick_device()
     model_dir = resolve_model_dir(args.model)
@@ -221,8 +236,10 @@ def main():
     tokenizer.save_pretrained(adapter_dir)
 
     # Метаданные run'а — чтобы evaluate.py/llm_as_judge.py дописывали метрики
-    # оценки (bertscore, judge, время) в тот же Trackio-run, не заводя новый.
-    save_run_meta(adapter_dir, run_name)
+    # оценки (bertscore, judge, время) в тот же Trackio-run, не заводя новый,
+    # и чтобы detect_finetune_method() надёжно знал метод обучения.
+    save_run_meta(adapter_dir, run_name, method={'LoRA': 'lora', 'QLoRA': 'qlora',
+                                                 'Full FT': 'full_ft'}[args.method])
 
     # TrackioCallback уже закрыл run в on_train_end — переоткрываем его же
     # (resume="must": ошибка, если вдруг run с таким именем не найден, а не
