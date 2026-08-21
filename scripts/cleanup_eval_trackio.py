@@ -11,7 +11,10 @@ learning_rate, epoch, grad_norm, ...) и артефакты адаптеров (
   - Перед изменениями делает бэкап .db-файла рядом с оригиналом.
   - Трогает только строки metrics, где среди ключей есть один из --prefix
     (обучение никогда не логирует bertscore_*/judge_* в той же строке —
-    это отдельные вызовы trackio.log() из разных скриптов).
+    это отдельные вызовы trackio.log() из разных скриптов). Колонка metrics
+    в БД Trackio хранится как BLOB, а не TEXT — SQL LIKE его не матчит
+    (SQLite не приводит BLOB к тексту для LIKE), поэтому фильтр по префиксу
+    делается в Python после decode(), а не в SQL-запросе.
   - Артефакты адаптеров (type="model", из finetune.py) не трогает —
     удаляет только type="report" (из llm_as_judge.py).
 
@@ -36,6 +39,14 @@ def resolve_db_path(project: str) -> Path:
         hf_home = os.environ.get("HF_HOME") or str(Path.home() / ".cache" / "huggingface")
         base = Path(hf_home) / "trackio"
     return base / f"{project}.db"
+
+
+def as_text(value) -> str:
+    """metrics в Trackio может лежать в БД как BLOB (bytes), а не TEXT —
+    SQLite тогда возвращает bytes из fetchall(), и обычный str.__contains__
+    на нём не сработает (и SQL LIKE тоже, отдельная причина, почему фильтр
+    делается здесь, а не в запросе)."""
+    return value.decode("utf-8") if isinstance(value, (bytes, bytearray)) else value
 
 
 def main():
@@ -68,14 +79,17 @@ def main():
 
     scope_note = f" (только run={args.run!r})" if args.run else " (по всем run'ам)"
 
+    # Фильтр по run_name — в SQL (обычная TEXT-колонка, LIKE/= работают), а по
+    # содержимому metrics — в Python (см. as_text): это BLOB, SQL LIKE его не видит.
+    if args.run:
+        cur.execute("SELECT id, run_name, step, metrics FROM metrics WHERE run_name = ?", (args.run,))
+    else:
+        cur.execute("SELECT id, run_name, step, metrics FROM metrics")
+    all_rows = cur.fetchall()
+
     metric_ids: set[int] = set()
     for prefix in prefixes:
-        if args.run:
-            cur.execute("SELECT id, run_name, step FROM metrics WHERE metrics LIKE ? AND run_name = ?",
-                       (f"%{prefix}%", args.run))
-        else:
-            cur.execute("SELECT id, run_name, step FROM metrics WHERE metrics LIKE ?", (f"%{prefix}%",))
-        rows = cur.fetchall()
+        rows = [row for row in all_rows if prefix in as_text(row["metrics"])]
         print(f"\n== метрики с '{prefix}'{scope_note}: {len(rows)} строк")
         for row in rows[:5]:
             print(f"   run={row['run_name']!r} step={row['step']}")

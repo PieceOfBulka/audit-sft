@@ -9,7 +9,10 @@ per-step метрики иначе продолжат портить графи�
   - Трогает ТОЛЬКО строки, где среди залогированных метрик есть judge_*
     (обучение логирует loss/lr/..., bertscore — bertscore_*, они никогда
     не смешиваются с judge_* в одной строке metrics, т.к. это разные
-    процессы/вызовы trackio.log()).
+    процессы/вызовы trackio.log()). Колонка metrics в БД Trackio хранится
+    как BLOB, а не TEXT — SQL LIKE его не матчит (SQLite не приводит BLOB
+    к тексту для LIKE), поэтому фильтр по judge_* делается в Python после
+    decode(), а не через "metrics LIKE '%judge_%'" в SQL.
   - Артефакты удаляются по имени, содержащему "-judge-report" (llm_as_judge.py
     логирует репорт как "{run_name}-judge-report", а для --eval-on train —
     "{run_name}-judge-report_train").
@@ -39,6 +42,14 @@ def resolve_db_path(project: str) -> Path:
     return base / f"{project}.db"
 
 
+def as_text(value) -> str:
+    """metrics в Trackio может лежать в БД как BLOB (bytes), а не TEXT —
+    SQLite тогда возвращает bytes из fetchall(), и обычный str.__contains__
+    на нём не сработает (и SQL LIKE тоже, отдельная причина, почему фильтр
+    делается здесь, а не в запросе)."""
+    return value.decode("utf-8") if isinstance(value, (bytes, bytearray)) else value
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--project", default="lora-finetuning")
@@ -66,16 +77,17 @@ def main():
 
     scope_note = f" (только run={args.run!r})" if args.run else " (по всем run'ам)"
 
-    # --- метрики: строки, где JSON содержит judge_*, опционально + свой run_name ---
+    # --- метрики: строки, где JSON содержит judge_*, опционально + свой run_name.
+    # Фильтр по run_name — в SQL (обычная TEXT-колонка, LIKE/= работают), а вот
+    # по содержимому metrics — в Python (см. as_text): это BLOB, SQL LIKE его не видит. ---
     if args.run:
-        cur.execute("SELECT id, run_name, step, metrics FROM metrics "
-                    "WHERE metrics LIKE '%judge_%' AND run_name = ?", (args.run,))
+        cur.execute("SELECT id, run_name, step, metrics FROM metrics WHERE run_name = ?", (args.run,))
     else:
-        cur.execute("SELECT id, run_name, step, metrics FROM metrics WHERE metrics LIKE '%judge_%'")
-    metric_rows = cur.fetchall()
+        cur.execute("SELECT id, run_name, step, metrics FROM metrics")
+    metric_rows = [row for row in cur.fetchall() if "judge_" in as_text(row["metrics"])]
     print(f"\n== метрики с judge_*{scope_note}: {len(metric_rows)} строк")
     for row in metric_rows[:10]:
-        print(f"   run={row['run_name']!r} step={row['step']} metrics={row['metrics'][:120]}")
+        print(f"   run={row['run_name']!r} step={row['step']} metrics={as_text(row['metrics'])[:120]}")
     if len(metric_rows) > 10:
         print(f"   ... и ещё {len(metric_rows) - 10}")
 
