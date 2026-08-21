@@ -1,0 +1,32 @@
+[project]
+name = "audit-sft"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Alex Frolov", email = "2204929@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "bert-score>=0.3.13",
+    "datasets>=4.3.0",
+    "dotenv>=0.9.9",
+    "gradio>=6.25.0",
+    "huggingface-hub>=1.28.0",
+    "mlx-lm[train]>=0.31.3",
+    "nvidia-ml-py>=13.610.43",
+    "openai>=3.3.1",
+    "peft>=0.20.0",
+    "pydantic>=2.13.4",
+    "torch>=2.11.0",
+    "trackio>=0.35.0",
+    "transformers>=5.5.0",
+    "unsloth>=2026.8.19",
+]
+
+[project.scripts]
+audit-sft = "audit_sft:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
