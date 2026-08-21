@@ -10,12 +10,16 @@ per-step метрики иначе продолжат портить графи�
     (обучение логирует loss/lr/..., bertscore — bertscore_*, они никогда
     не смешиваются с judge_* в одной строке metrics, т.к. это разные
     процессы/вызовы trackio.log()).
-  - Артефакты удаляются по имени, оканчивающемуся на "-judge-report"
-    (это то имя, под которым llm_as_judge.py логирует репорт).
+  - Артефакты удаляются по имени, содержащему "-judge-report" (llm_as_judge.py
+    логирует репорт как "{run_name}-judge-report", а для --eval-on train —
+    "{run_name}-judge-report_train").
+  - --run <run_name> сужает удаление до одного run'а (иначе чистит по всем).
 
 Запуск (на сервере, тем же пользователем, что запускает app.py/train):
     python scripts/cleanup_judge_trackio.py                 # dry-run, только покажет, что будет удалено
-    python scripts/cleanup_judge_trackio.py --apply          # реально удалить
+    python scripts/cleanup_judge_trackio.py --apply          # реально удалить (по всем run'ам)
+    python scripts/cleanup_judge_trackio.py --run zakupki_Qwen3-8B_r16a32_lr2e-4_ep2 --apply
+                                                              # только для одного run'а
     python scripts/cleanup_judge_trackio.py --project OTHER  # если проект называется не lora-finetuning
 """
 import argparse
@@ -38,6 +42,10 @@ def resolve_db_path(project: str) -> Path:
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--project", default="lora-finetuning")
+    p.add_argument("--run", default=None,
+                   help="Ограничить удаление одним run_name (см. колонку run_name в дашборде "
+                        "Trackio или run_name в trackio_run.json рядом с адаптером). "
+                        "Не задано -> чистит judge-данные по ВСЕМ run'ам.")
     p.add_argument("--apply", action="store_true",
                    help="Реально удалить. Без этого флага — только dry-run (покажет, что нашёл).")
     args = p.parse_args()
@@ -56,19 +64,30 @@ def main():
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    # --- метрики: строки, где JSON содержит judge_* ---
-    cur.execute("SELECT id, run_name, step, metrics FROM metrics WHERE metrics LIKE '%judge_%'")
+    scope_note = f" (только run={args.run!r})" if args.run else " (по всем run'ам)"
+
+    # --- метрики: строки, где JSON содержит judge_*, опционально + свой run_name ---
+    if args.run:
+        cur.execute("SELECT id, run_name, step, metrics FROM metrics "
+                    "WHERE metrics LIKE '%judge_%' AND run_name = ?", (args.run,))
+    else:
+        cur.execute("SELECT id, run_name, step, metrics FROM metrics WHERE metrics LIKE '%judge_%'")
     metric_rows = cur.fetchall()
-    print(f"\n== метрики с judge_*: {len(metric_rows)} строк")
+    print(f"\n== метрики с judge_*{scope_note}: {len(metric_rows)} строк")
     for row in metric_rows[:10]:
         print(f"   run={row['run_name']!r} step={row['step']} metrics={row['metrics'][:120]}")
     if len(metric_rows) > 10:
         print(f"   ... и ещё {len(metric_rows) - 10}")
 
-    # --- артефакты: judge-report ---
-    cur.execute("SELECT id, name, type FROM artifacts WHERE name LIKE '%-judge-report'")
+    # --- артефакты: judge-report. Имя артефакта — "{run_name}-judge-report[_eval_on]"
+    # (см. llm_as_judge.py), поэтому фильтр по run'у — префикс, а не точное совпадение. ---
+    if args.run:
+        cur.execute("SELECT id, name, type FROM artifacts WHERE name LIKE ?",
+                    (f"{args.run}-judge-report%",))
+    else:
+        cur.execute("SELECT id, name, type FROM artifacts WHERE name LIKE '%-judge-report%'")
     artifact_rows = cur.fetchall()
-    print(f"\n== артефакты judge-report: {len(artifact_rows)}")
+    print(f"\n== артефакты judge-report{scope_note}: {len(artifact_rows)}")
     for row in artifact_rows:
         print(f"   id={row['id']} name={row['name']!r} type={row['type']!r}")
 
