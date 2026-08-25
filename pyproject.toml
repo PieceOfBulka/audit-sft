@@ -75,6 +75,14 @@ environments = [
     "sys_platform == 'linux'",
 ]
 
+# flash-attn у unsloth[cu128-ampere-torch280] не имеет подходящего готового
+# wheel под эту связку и собирается из исходников — его setup.py сам
+# импортирует torch (детект CUDA-архитектуры), но не объявляет его как
+# build-зависимость, поэтому в изолированном build-окружении uv его не видно
+# без этой строчки (см. подсказку самого uv в тексте ошибки).
+[tool.uv.extra-build-dependencies]
+flash-attn = ["torch"]
+
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
