@@ -145,7 +145,17 @@ def main():
     # если взять его как label, build_run_name продублировал бы гиперпараметры
     # в имени run'а дважды.
     run_label = args.adapter_name or args.domain or os.path.splitext(os.path.basename(dataset_path))[0]
-    run_name = build_run_name(run_label, args.model, rank, alpha, args.lr, args.epochs)
+    run_name = build_run_name(
+        run_label, args.model, rank, alpha, args.lr, args.epochs,
+        # Те же доп-параметры, что уже идут в default_adapter_path() выше —
+        # иначе смена, например, target_modules при тех же rank/alpha/lr/epochs
+        # тихо переиспользовала бы тот же Trackio-run, что и предыдущий прогон.
+        method=args.method, lora_dropout=args.lora_dropout, target_modules=args.target_modules,
+        batch_size=args.batch_size, grad_accum_steps=args.grad_accum_steps,
+        warmup_ratio=args.warmup_ratio, group_by_length=args.group_by_length,
+        liger=args.liger, max_seq_length=args.max_seq_length, eval_steps=args.eval_steps,
+        load_best_model_at_end=args.load_best_model_at_end,
+    )
     # Не вызываем trackio.init() тут вручную: Trainer с report_to="trackio"
     # сам создаёт run через TrackioCallback (используя project=/run_name= из
     # TrainingArguments ниже) и сам закрывает его в on_train_end. Ручной init

@@ -49,8 +49,16 @@ def slug(text: str) -> str:
 
 
 def build_run_name(domain_or_label: str, model_name: str, rank: int, alpha: int, lr: float,
-                   epochs: int) -> str:
-    return f"{slug(domain_or_label)}_{slug(model_name)}_r{rank}a{alpha}_lr{lr:g}_ep{epochs}"
+                   epochs: int, **other_hparams) -> str:
+    """other_hparams (target_modules, lora_dropout, ...) не входят в читаемую
+    часть имени — только в hparams_hash() ниже. Без этого два прогона с
+    одинаковыми rank/alpha/lr/epochs, но разными target_modules (например,
+    только attention против всех линейных слоёв) получали ОДИНАКОВОЕ имя
+    Trackio-run'а и он переиспользовал/затирал предыдущий — даже при том, что
+    сама папка адаптера (default_adapter_path в finetune.py) уже была
+    защищена тем же hparams_hash()."""
+    h = hparams_hash(rank=rank, alpha=alpha, lr=lr, epochs=epochs, **other_hparams)
+    return f"{slug(domain_or_label)}_{slug(model_name)}_r{rank}a{alpha}_lr{lr:g}_ep{epochs}_{h}"
 
 
 def hparams_hash(**hparams) -> str:
