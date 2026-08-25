@@ -22,9 +22,14 @@ dependencies = [
     "dotenv>=0.9.9",
     # gradio: без верхней границы резолвер тянет huggingface-hub>=1.16, а
     # transformers==4.56.2 (см. ниже, зафиксирован под unsloth/Qwen3) требует
-    # huggingface-hub<1.0 — несовместимо. Даём резолверу сузиться до largest
-    # gradio, совместимого с huggingface-hub<1.0, через явную границу на hub.
-    "gradio",
+    # huggingface-hub<1.0 — несовместимо. huggingface-hub<1.0 ниже уже сужает
+    # его до 6.x, но также нужен потолок <6.13.0: trackio==0.20.2 (см. ниже)
+    # вышел 2026-03-30, когда актуальным был gradio 6.10.0 — с более новым
+    # gradio (проверено на 6.17.3) trackio.show() падает внутри
+    # gradio.server.launch() с AttributeError: 'Api' object has no attribute
+    # '_id' (несовместимость с внутренним Api/Dependency gradio, появившимся
+    # уже после релиза trackio 0.20.2).
+    "gradio>=6.10.0,<6.13.0",
     "huggingface-hub>=0.34.0,<1.0",
     "nvidia-ml-py>=13.610.43",
     "openai>=3.3.1",
