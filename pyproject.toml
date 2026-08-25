@@ -9,10 +9,10 @@ authors = [
 requires-python = ">=3.12,<3.13"
 # Этот файл/uv.lock — CUDA-сервер (аналог requirements-unsloth-cuda.txt,
 # версии сверены с ним же). mlx-lm (Apple Silicon, MLX) сюда намеренно не
-# включён — он требует transformers>=5.0.0, что несовместимо с
-# transformers==4.56.2 ниже (нужен под unsloth/Qwen3), а universal-резолвинг
-# uv не даёт развести это через marker/extra на один и тот же пакет без
-# конфликтов. Для локальной разработки на Mac (mlx-lm) — по-прежнему
+# включён — universal-резолвинг uv пытается свести граф и под macOS
+# (unsloth-zoo -> mlx-vlm, darwin-only) и падает на конфликте версий там,
+# даже когда сам mlx-lm явно не запрошен (см. [tool.uv] environments ниже).
+# Для локальной разработки на Mac (mlx-lm) — по-прежнему
 # `pip install -r requirements.txt`, не uv.
 dependencies = [
     "bert-score>=0.3.13",
@@ -20,17 +20,8 @@ dependencies = [
     # 4.4+ и 4.0.*/4.1.0 явно исключены.
     "datasets!=4.0.*,!=4.1.0,<4.4.0,>=3.4.1",
     "dotenv>=0.9.9",
-    # gradio: без верхней границы резолвер тянет huggingface-hub>=1.16, а
-    # transformers==4.56.2 (см. ниже, зафиксирован под unsloth/Qwen3) требует
-    # huggingface-hub<1.0 — несовместимо. huggingface-hub<1.0 ниже уже сужает
-    # его до 6.x, но также нужен потолок <6.13.0: trackio==0.20.2 (см. ниже)
-    # вышел 2026-03-30, когда актуальным был gradio 6.10.0 — с более новым
-    # gradio (проверено на 6.17.3) trackio.show() падает внутри
-    # gradio.server.launch() с AttributeError: 'Api' object has no attribute
-    # '_id' (несовместимость с внутренним Api/Dependency gradio, появившимся
-    # уже после релиза trackio 0.20.2).
-    "gradio>=6.10.0,<6.13.0",
-    "huggingface-hub>=0.34.0,<1.0",
+    "gradio",
+    "huggingface-hub>=0.34.0",
     "nvidia-ml-py>=13.610.43",
     "openai>=3.3.1",
     "peft!=0.11.0,>=0.18.0",
@@ -48,16 +39,17 @@ dependencies = [
     # version before that import was introduced.
     "torchao>=0.13.0,<0.18.0",
     "triton>=3.0.0",
-    # trackio: как и gradio выше, без верхней границы резолвер тянет
-    # huggingface-hub>=1.10, несовместимо с transformers==4.56.2 (hub<1.0).
     "trackio",
     "trl!=0.19.0,<=0.24.0,>=0.18.2",
     "accelerate>=0.34.1",
     "bitsandbytes!=0.46.0,!=0.48.0,>=0.45.5",
-    # transformers: разрешённый диапазон unsloth — >=4.51.3,<=5.5.0, минус набор
-    # конкретно исключённых версий (среди них вся ветка 5.x, ломающая
-    # Qwen3-fastpath через apply_qkv). 4.56.2 не входит в исключения.
-    "transformers==4.56.2",
+    # transformers: точный диапазон, разрешённый unsloth==2026.7.4 (сверено с
+    # его requires_dist на PyPI, а не с устаревшим комментарием "вся ветка 5.x
+    # ломает Qwen3-fastpath" — тот относился к более ранней версии unsloth;
+    # актуальный unsloth блокирует только конкретные версии 5.0.0/5.1.0, не
+    # всю ветку). Без верхнего потолка типа ==4.56.2 huggingface-hub может
+    # уйти в >=1.0 — нужного и gradio/trackio для рабочего дашборда.
+    "transformers!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0,>=4.51.3",
     # unsloth[cu128-ampere-torch280]: официальная сборка под A100/Ampere +
     # torch 2.8.0 + CUDA 12.8 — сама подтягивает верную версию xformers/
     # bitsandbytes для этой комбинации.
