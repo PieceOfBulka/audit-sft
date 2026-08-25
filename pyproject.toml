@@ -54,6 +54,11 @@ dependencies = [
     # bitsandbytes для этой комбинации.
     "unsloth[cu128-ampere-torch280]==2026.7.4",
     "unsloth-zoo==2026.7.4",
+    # flash-attn: явно как прямая зависимость (не только транзитивная через
+    # unsloth[cu128-ampere-torch280]) — [tool.uv.sources] override ниже
+    # (готовый wheel вместо компиляции из исходников) применяется только к
+    # прямым зависимостям проекта, к транзитивным не цепляется.
+    "flash-attn==2.8.3.post1",
 ]
 
 [tool.uv]
@@ -75,18 +80,18 @@ environments = [
     "sys_platform == 'linux'",
 ]
 
-# flash-attn у unsloth[cu128-ampere-torch280] не имеет подходящего готового
-# wheel под эту связку и собирается из исходников — его setup.py сам
-# импортирует torch (детект CUDA-архитектуры), но не объявляет его как
-# build-зависимость, поэтому в изолированном build-окружении uv его не видно
-# без этой строчки (см. подсказку самого uv в тексте ошибки).
-[tool.uv.extra-build-dependencies]
-flash-attn = ["torch"]
-
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
+# flash-attn (тянется транзитивно через unsloth[cu128-ampere-torch280]) не
+# имеет wheel на PyPI под эту связку и по умолчанию собирается из исходников
+# (компиляция CUDA-ядер — десятки минут). У самого проекта на GitHub есть
+# готовые wheel'ы под конкретные torch/CUDA/Python/ABI — берём точное
+# совпадение под torch==2.8.0+cu128, Python 3.12, cxx11abiTRUE (torch 2.8.0
+# собран под manylinux_2_28 — новый тулчейн, использует новый C++11 ABI;
+# проверено: torch._C._GLIBCXX_USE_CXX11_ABI == True в этом окружении).
+flash-attn = { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3.post1/flash_attn-2.8.3.post1%2Bcu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
