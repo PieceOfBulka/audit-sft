@@ -56,10 +56,16 @@ dependencies = [
     "unsloth-zoo==2026.7.4",
 ]
 
-[project.scripts]
-audit-sft = "audit_sft:main"
-
 [tool.uv]
+# package = false: этот проект — набор скриптов (python lora_peft/app.py,
+# lora_peft/finetune.py, ...), не импортируемый пакет audit_sft (которого
+# физически нет — src/audit_sft/__init__.py никогда не существовал, это
+# просто дефолтный boilerplate от `uv init`). Без этого uv_build пытается
+# собрать и установить сам проект как пакет и падает: "Expected a Python
+# module at: src/audit_sft/__init__.py". package = false просто ставит
+# зависимости в .venv, ничего не билдит и не устанавливает из самого репо.
+package = false
+
 # Этот lock только под CUDA-сервер (Linux) — см. комментарий у dependencies
 # про mlx-lm. Без этого резолвер всё равно пытается свести граф под macOS
 # (через darwin-only транзитивную ветку unsloth-zoo -> mlx-vlm ->
