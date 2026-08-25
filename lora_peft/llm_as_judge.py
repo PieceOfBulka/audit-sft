@@ -500,9 +500,13 @@ def main():
 
         if run_meta:
             if os.path.isfile(result_file):
-                trackio.log_artifact(result_file,
-                                     name=f"{run_meta['run_name']}-judge-report{metric_suffix}",
-                                     type="report")
+                # log_artifact/use_artifact появились в trackio только в июле
+                # 2026 — версия, зафиксированная в проекте (0.20.2, из-за
+                # требования huggingface-hub<1.0 у transformers==4.56.2), их
+                # не знает вовсе. trackio.save() — доступный в этой версии
+                # эквивалент: копирует файл, привязанный к ТЕКУЩЕМУ активному
+                # run'у (нет name=/type=, но репорт так же попадает в файлы run'а).
+                trackio.save(result_file)
                 print(f"== репорт судьи сохранён как artifact в Trackio: {result_file}")
             trackio.finish()
 

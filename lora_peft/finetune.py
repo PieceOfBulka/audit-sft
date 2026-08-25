@@ -245,7 +245,13 @@ def main():
     # (resume="must": ошибка, если вдруг run с таким именем не найден, а не
     # тихое создание нового) только чтобы приложить адаптер как artifact.
     trackio.init(project=TRACKIO_PROJECT, name=run_name, resume="must")
-    trackio.log_artifact(adapter_dir, name=f"{run_name}-adapter", type="model")
+    # log_artifact/use_artifact появились в trackio только в июле 2026 —
+    # версия, зафиксированная в проекте (0.20.2, из-за требования
+    # huggingface-hub<1.0 у transformers==4.56.2), их не знает вовсе.
+    # trackio.save() — доступный в этой версии эквивалент: копирует файлы,
+    # привязанные к ТЕКУЩЕМУ активному run'у (нет name=/type=, но адаптер
+    # так же попадает в файлы run'а).
+    trackio.save(f"{adapter_dir}/**/*")
     trackio.finish()
 
 
