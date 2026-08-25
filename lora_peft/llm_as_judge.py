@@ -222,6 +222,11 @@ def generate_reply(
         ],
         tokenize=False,
         add_generation_prompt=True,
+        # Qwen3 по умолчанию генерирует <think>...</think> перед ответом
+        # (enable_thinking=True) — для оценки нужен сам ответ, а не трейс
+        # рассуждений, плюс это резко замедляет генерацию. На чат-шаблонах
+        # без этого параметра (не-Qwen3) просто игнорируется.
+        enable_thinking=False,
     )
     inputs = tokenizer(
         tokenized_prompt,

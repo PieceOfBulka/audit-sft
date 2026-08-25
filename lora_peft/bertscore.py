@@ -213,6 +213,11 @@ def generate_batch(model, tokenizer, system_prompt, examples, device, max_new_to
             [{"role": "system", "content": system_prompt},
              {"role": "user", "content": build_user_content(ex)}],
             tokenize=False, add_generation_prompt=True,
+            # Qwen3 по умолчанию генерирует <think>...</think> перед ответом
+            # (enable_thinking=True) — для оценки нужен сам ответ, а не трейс
+            # рассуждений, плюс это резко замедляет генерацию. На чат-шаблонах
+            # без этого параметра (не-Qwen3) просто игнорируется.
+            enable_thinking=False,
         )
         for ex in examples
     ]
