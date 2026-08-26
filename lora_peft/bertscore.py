@@ -36,10 +36,11 @@ import torch
 import trackio
 
 from load_dataset import load_train_eval_dataset
-from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS, TRACKIO_PROJECT,
-                               base_run_name, build_user_content, detect_finetune_method,
-                               load_run_meta, pick_device, resolve_model_dir,
-                               should_log_trackio_avg, silence_max_length_warning, slug)
+from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS, FULL_EVAL_THRESHOLD,
+                               TRACKIO_PROJECT, base_run_name, build_user_content,
+                               detect_finetune_method, load_run_meta, pick_device,
+                               resolve_model_dir, should_log_trackio_avg,
+                               silence_max_length_warning, slug)
 
 METHOD_LABELS = {"lora": "LoRA", "qlora": "QLoRA", "full_ft": "Full FT"}
 
@@ -334,12 +335,12 @@ def main():
         # Суффикс _train, чтобы контрольный прогон на обучающих данных не
         # перезаписывал/не путался с основной test-метрикой на том же графике —
         # это два разных числа, которые осмысленно сравнивать бок о бок.
-        # Дополнительный _full — когда реально прогнаны ВСЕ примеры сплита
-        # (--num >= размера сплита), а не выборка из --num — чтобы полный
-        # прогон был отдельной, честно сравнимой метрикой, а не смешивался
-        # на графике с быстрыми выборочными проверками.
+        # Дополнительный _full — когда --num >= FULL_EVAL_THRESHOLD (сплиты
+        # обычно в разы больше — гонять на них ВСЕХ непрактично), чтобы
+        # полновесная проверка была отдельной, честно сравнимой метрикой,
+        # а не смешивалась на графике с быстрыми выборочными проверками.
         suffix = "" if args.eval_on == "test" else f"_{args.eval_on}"
-        suffix += "_full" if n == len(split) else ""
+        suffix += "_full" if n >= FULL_EVAL_THRESHOLD else ""
         trackio.init(project=project, name=run_name, resume=resume_mode)
 
         f1_key = f"bertscore_f1{suffix}"

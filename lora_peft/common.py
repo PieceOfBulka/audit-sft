@@ -24,6 +24,14 @@ TRACKIO_PROJECT = "lora-finetuning"
 # (resume="must"), не зная и не пересобирая гиперпараметры заново.
 RUN_META_FILENAME = "trackio_run.json"
 
+# Порог "полной" проверки для суффикса _full в bertscore.py/llm_as_judge.py
+# (bertscore_f1_full, judge_faithfulness_avg_full, ...). Тест-сплиты обычно
+# в разы больше 50 (например ~1100 у zakupki5500) — требовать буквально ВСЕ
+# примеры непрактично, никто не будет гонять judge на тысяче примеров.
+# n >= FULL_EVAL_THRESHOLD считается статистически достаточным для отдельной,
+# сравнимой между моделями метрики.
+FULL_EVAL_THRESHOLD = 50
+
 
 def base_run_name(model_name: str, domain_or_label: str) -> str:
     """Имя Trackio-run'а для оценки БАЗОВОЙ модели (без LoRA-адаптера).

@@ -19,9 +19,10 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import trackio
 
 from lora_peft.sft_lora_peft import pick_device, torch_dtype
-from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_JUDGE, DOMAIN_SYSTEM_PROMPTS, TRACKIO_PROJECT,
-                               Judgement, base_run_name, build_user_content, detect_finetune_method,
-                               load_run_meta, should_log_trackio_avg, silence_max_length_warning, slug)
+from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_JUDGE, DOMAIN_SYSTEM_PROMPTS,
+                               FULL_EVAL_THRESHOLD, TRACKIO_PROJECT, Judgement, base_run_name,
+                               build_user_content, detect_finetune_method, load_run_meta,
+                               should_log_trackio_avg, silence_max_length_warning, slug)
 from load_dataset import load_train_eval_dataset
 
 load_dotenv()
@@ -346,9 +347,8 @@ def main():
     split = load_train_eval_dataset(dataset_path)[args.eval_on]
     if args.shuffle:
         split = split.shuffle(seed=args.seed)
-    total_available = len(split)  # до --iterations — нужно, чтобы отличить полный прогон от выборки
     if args.iterations is not None:
-        split = split.select(range(min(args.iterations, total_available)))
+        split = split.select(range(min(args.iterations, len(split))))
     print(f"== вопросы и эталонные ответы берутся из {args.eval_on}-сплита {dataset_path} "
           f"({len(split)} примеров)")
 
@@ -486,12 +486,12 @@ def main():
                 f.write('#' * 60 + '\n')
                 f.write(''.join(entries))
 
-            # _full — когда реально пройдены ВСЕ примеры сплита (не --iterations
-            # с меньшим числом и не ранний выход из интерактивного режима),
-            # чтобы полный прогон был отдельной метрикой, сравнимой между
-            # моделями/адаптерами, а не смешивался на графике с быстрыми
-            # выборочными проверками на нескольких примерах.
-            full_suffix = "_full" if n == total_available else ""
+            # _full — когда n >= FULL_EVAL_THRESHOLD (тест-сплиты обычно в разы
+            # больше — требовать буквально ВСЕ непрактично), чтобы полновесная
+            # проверка была отдельной метрикой, сравнимой между моделями/
+            # адаптерами, а не смешивалась на графике с быстрыми выборочными
+            # проверками на нескольких примерах.
+            full_suffix = "_full" if n >= FULL_EVAL_THRESHOLD else ""
             avg_key = f"judge_faithfulness_avg{metric_suffix}{full_suffix}"
             n_key = f"judge_num_samples{metric_suffix}{full_suffix}"
             if run_meta and should_log_trackio_avg(run_meta["project"], run_meta["run_name"], n,
