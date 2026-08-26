@@ -25,6 +25,18 @@ TRACKIO_PROJECT = "lora-finetuning"
 RUN_META_FILENAME = "trackio_run.json"
 
 
+def base_run_name(model_name: str, domain_or_label: str) -> str:
+    """Имя Trackio-run'а для оценки БАЗОВОЙ модели (без LoRA-адаптера).
+
+    У базовой модели нет ни адаптера, ни trackio_run.json — негде хранить
+    имя run'а между отдельными запусками bertscore.py/llm_as_judge.py. Вместо
+    этого имя детерминированно строится из модели+домена (без гиперпараметров
+    обучения — их нет), так что повторный прогон на той же модели/домене сам
+    попадает в тот же run, и результаты базовой модели видны на дашборде
+    рядом с LoRA-вариантами, а не выпадают из сравнения вовсе."""
+    return f"{slug(domain_or_label)}_{slug(model_name)}_base"
+
+
 def pick_device() -> str:
     if torch.cuda.is_available():
         return "cuda"

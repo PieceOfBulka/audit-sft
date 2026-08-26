@@ -19,9 +19,9 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import trackio
 
 from lora_peft.sft_lora_peft import pick_device, torch_dtype
-from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_JUDGE, DOMAIN_SYSTEM_PROMPTS, Judgement,
-                               build_user_content, detect_finetune_method, load_run_meta,
-                               should_log_trackio_avg, silence_max_length_warning, slug)
+from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_JUDGE, DOMAIN_SYSTEM_PROMPTS, TRACKIO_PROJECT,
+                               Judgement, base_run_name, build_user_content, detect_finetune_method,
+                               load_run_meta, should_log_trackio_avg, silence_max_length_warning, slug)
 from load_dataset import load_train_eval_dataset
 
 load_dotenv()
@@ -346,8 +346,9 @@ def main():
     split = load_train_eval_dataset(dataset_path)[args.eval_on]
     if args.shuffle:
         split = split.shuffle(seed=args.seed)
+    total_available = len(split)  # до --iterations — нужно, чтобы отличить полный прогон от выборки
     if args.iterations is not None:
-        split = split.select(range(min(args.iterations, len(split))))
+        split = split.select(range(min(args.iterations, total_available)))
     print(f"== вопросы и эталонные ответы берутся из {args.eval_on}-сплита {dataset_path} "
           f"({len(split)} примеров)")
 
@@ -360,13 +361,24 @@ def main():
         device=device
         )
 
-    run_meta = load_run_meta(args.adapter) if args.lora else None
+    if args.lora:
+        run_meta = load_run_meta(args.adapter)
+        resume_mode = "must"
+        if not run_meta:
+            print(f"== {os.path.join(args.adapter, 'trackio_run.json')} не найден — "
+                  "пропускаю логирование в Trackio (адаптер обучен без finetune.py?)")
+    else:
+        # Базовая модель без адаптера — детерминированное имя run'а по
+        # модели+домену (base_run_name), а не None: иначе оценка базовой
+        # модели вообще никогда не попадала на дашборд и её не с чем было
+        # сравнивать. resume="allow" — первый прогон создаёт run сам,
+        # следующие резюмируются в тот же.
+        run_meta = {"project": TRACKIO_PROJECT, "run_name": base_run_name(args.model, args.domain)}
+        resume_mode = "allow"
+
     if run_meta:
-        trackio.init(project=run_meta["project"], name=run_meta["run_name"], resume="must")
+        trackio.init(project=run_meta["project"], name=run_meta["run_name"], resume=resume_mode)
         print(f"== метрики judge будут дописаны в Trackio-run '{run_meta['run_name']}'")
-    elif args.lora:
-        print(f"== {os.path.join(args.adapter, 'trackio_run.json')} не найден — "
-              "пропускаю логирование в Trackio (адаптер обучен без finetune.py?)")
 
     result_dir = f"judgements/judge_{slug(args.judge_model)}"
     os.makedirs(result_dir, exist_ok=True)
@@ -474,8 +486,14 @@ def main():
                 f.write('#' * 60 + '\n')
                 f.write(''.join(entries))
 
-            avg_key = f"judge_faithfulness_avg{metric_suffix}"
-            n_key = f"judge_num_samples{metric_suffix}"
+            # _full — когда реально пройдены ВСЕ примеры сплита (не --iterations
+            # с меньшим числом и не ранний выход из интерактивного режима),
+            # чтобы полный прогон был отдельной метрикой, сравнимой между
+            # моделями/адаптерами, а не смешивался на графике с быстрыми
+            # выборочными проверками на нескольких примерах.
+            full_suffix = "_full" if n == total_available else ""
+            avg_key = f"judge_faithfulness_avg{metric_suffix}{full_suffix}"
+            n_key = f"judge_num_samples{metric_suffix}{full_suffix}"
             if run_meta and should_log_trackio_avg(run_meta["project"], run_meta["run_name"], n,
                                                    avg_key, n_key):
                 # step=0 ЖЁСТКО, а не "трекио сам разберётся": Run.log() без
@@ -491,11 +509,11 @@ def main():
                 # ровно одна, самая статистически значимая точка на run.
                 trackio.log({
                     avg_key: round(avg_faithfulness, 3),
-                    f"judge_completeness_avg{metric_suffix}": round(avg_completeness, 3),
-                    f"judge_consciousness_avg{metric_suffix}": round(avg_consciousness, 3),
+                    f"judge_completeness_avg{metric_suffix}{full_suffix}": round(avg_completeness, 3),
+                    f"judge_consciousness_avg{metric_suffix}{full_suffix}": round(avg_consciousness, 3),
                     n_key: n,
-                    f"judge_reply_time_avg_sec{metric_suffix}": round(sum(reply_times) / n, 2),
-                    f"judge_eval_time_avg_sec{metric_suffix}": round(sum(judge_times) / n, 2),
+                    f"judge_reply_time_avg_sec{metric_suffix}{full_suffix}": round(sum(reply_times) / n, 2),
+                    f"judge_eval_time_avg_sec{metric_suffix}{full_suffix}": round(sum(judge_times) / n, 2),
                 }, step=0)
 
         if run_meta:

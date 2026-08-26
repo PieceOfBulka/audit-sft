@@ -36,8 +36,8 @@ import torch
 import trackio
 
 from load_dataset import load_train_eval_dataset
-from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
-                               build_user_content, detect_finetune_method,
+from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS, TRACKIO_PROJECT,
+                               base_run_name, build_user_content, detect_finetune_method,
                                load_run_meta, pick_device, resolve_model_dir,
                                should_log_trackio_avg, silence_max_length_warning, slug)
 
@@ -314,39 +314,55 @@ def main():
         json.dump({"summary": result, "examples": per_example}, fh, ensure_ascii=False, indent=2)
     print(f"\n== подробные результаты сохранены в {out_path}")
 
-    if not args.base_only:
+    if args.base_only:
+        # У базовой модели нет адаптера/trackio_run.json — имя run'а строится
+        # детерминированно из модели+домена (base_run_name), чтобы результаты
+        # базовой модели тоже попадали на дашборд и были сравнимы с LoRA.
+        project = TRACKIO_PROJECT
+        run_name = base_run_name(args.model, dataset_label)
+        resume_mode = "allow"  # первый прогон создаёт run, следующие — резюмируют
+    else:
         run_meta = load_run_meta(args.adapter)
-        if run_meta:
-            # Суффикс _train, чтобы контрольный прогон на обучающих данных не
-            # перезаписывал/не путался с основной test-метрикой на том же графике —
-            # это два разных числа, которые осмысленно сравнивать бок о бок.
-            suffix = "" if args.eval_on == "test" else f"_{args.eval_on}"
-            trackio.init(project=run_meta["project"], name=run_meta["run_name"], resume="must")
-
-            f1_key = f"bertscore_f1{suffix}"
-            n_key = f"bertscore_num_samples{suffix}"
-            if should_log_trackio_avg(run_meta["project"], run_meta["run_name"], n, f1_key, n_key):
-                # step=0 ЖЁСТКО + should_log_trackio_avg: без этого повторные
-                # прогоны (например --eval-on test и --eval-on train, или
-                # просто перезапуски) добавляют новую строку метрики на
-                # растущий step, и дашборд рисует линию вместо одного
-                # столбика — тот же баг, что был у llm_as_judge.py.
-                trackio.log({
-                    f"bertscore_precision{suffix}": result["precision"],
-                    f"bertscore_recall{suffix}": result["recall"],
-                    f1_key: result["f1"],
-                    n_key: n,
-                    f"bertscore_generation_time_sec{suffix}": result["generation_time_sec"],
-                    f"bertscore_time_sec{suffix}": result["bertscore_time_sec"],
-                    f"bertscore_total_eval_time_sec{suffix}": result["total_eval_time_sec"],
-                    f"bertscore_sec_per_example{suffix}": result["sec_per_example"],
-                }, step=0)
-                print(f"== метрики дописаны в Trackio-run '{run_meta['run_name']}'")
-
-            trackio.finish()
-        else:
+        project = run_meta["project"] if run_meta else None
+        run_name = run_meta["run_name"] if run_meta else None
+        resume_mode = "must"
+        if not run_meta:
             print(f"== {os.path.join(args.adapter, 'trackio_run.json')} не найден — "
                   "пропускаю логирование в Trackio (адаптер обучен без finetune.py?)")
+
+    if run_name:
+        # Суффикс _train, чтобы контрольный прогон на обучающих данных не
+        # перезаписывал/не путался с основной test-метрикой на том же графике —
+        # это два разных числа, которые осмысленно сравнивать бок о бок.
+        # Дополнительный _full — когда реально прогнаны ВСЕ примеры сплита
+        # (--num >= размера сплита), а не выборка из --num — чтобы полный
+        # прогон был отдельной, честно сравнимой метрикой, а не смешивался
+        # на графике с быстрыми выборочными проверками.
+        suffix = "" if args.eval_on == "test" else f"_{args.eval_on}"
+        suffix += "_full" if n == len(split) else ""
+        trackio.init(project=project, name=run_name, resume=resume_mode)
+
+        f1_key = f"bertscore_f1{suffix}"
+        n_key = f"bertscore_num_samples{suffix}"
+        if should_log_trackio_avg(project, run_name, n, f1_key, n_key):
+            # step=0 ЖЁСТКО + should_log_trackio_avg: без этого повторные
+            # прогоны (например --eval-on test и --eval-on train, или
+            # просто перезапуски) добавляют новую строку метрики на
+            # растущий step, и дашборд рисует линию вместо одного
+            # столбика — тот же баг, что был у llm_as_judge.py.
+            trackio.log({
+                f"bertscore_precision{suffix}": result["precision"],
+                f"bertscore_recall{suffix}": result["recall"],
+                f1_key: result["f1"],
+                n_key: n,
+                f"bertscore_generation_time_sec{suffix}": result["generation_time_sec"],
+                f"bertscore_time_sec{suffix}": result["bertscore_time_sec"],
+                f"bertscore_total_eval_time_sec{suffix}": result["total_eval_time_sec"],
+                f"bertscore_sec_per_example{suffix}": result["sec_per_example"],
+            }, step=0)
+            print(f"== метрики дописаны в Trackio-run '{run_name}'")
+
+        trackio.finish()
 
 
 if __name__ == "__main__":
