@@ -211,11 +211,17 @@ def should_log_trackio_avg(project: str, run_name: str, n: int, metric_key: str,
 
 def resolve_model_dir(model: str) -> str:
     """--model может быть либо repo-id вида 'Qwen/Qwen3-4B-Instruct-2507'
-    (тогда ищем в weights/<repo-id>), либо уже готовым абсолютным/относительным путём."""
+    (тогда ищем в weights/<repo-id>), либо уже готовым абсолютным/относительным путём.
+
+    Если под weights/<repo-id> ничего нет — отдаём исходный repo-id как есть,
+    а не несуществующий локальный путь: from_pretrained() сам скачает модель
+    с Hugging Face Hub (в стандартный HF-кэш ~/.cache/huggingface/hub, не
+    сюда), вместо падения с "модель не найдена"."""
     if os.path.isabs(model) or os.path.isdir(model):
         return model
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(_root, "weights", model)
+    local_dir = os.path.join(_root, "weights", model)
+    return local_dir if os.path.isdir(local_dir) else model
 
 
 def _repo_root() -> str:
