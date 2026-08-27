@@ -377,7 +377,18 @@ def main():
         resume_mode = "allow"
 
     if run_meta:
-        trackio.init(project=run_meta["project"], name=run_meta["run_name"], resume=resume_mode)
+        try:
+            trackio.init(project=run_meta["project"], name=run_meta["run_name"], resume=resume_mode)
+        except ValueError as exc:
+            # resume="must" бросает ValueError, если run с таким именем не
+            # существует (см. gradio-app/trackio) — например trackio_run.json
+            # у адаптера ссылается на run, которого больше нет (БД пересоздана/
+            # очищена). Раньше это валило весь скрипт ДО начала оценки —
+            # логирование в Trackio не должно быть жёстким условием для самой
+            # оценки, поэтому не падаем, а создаём run заново под тем же именем.
+            print(f"== resume=must для run '{run_meta['run_name']}' не удался ({exc}) — "
+                  "создаю run заново (resume=allow)")
+            trackio.init(project=run_meta["project"], name=run_meta["run_name"], resume="allow")
         print(f"== метрики judge будут дописаны в Trackio-run '{run_meta['run_name']}'")
 
     result_dir = f"judgements/judge_{slug(args.judge_model)}"
