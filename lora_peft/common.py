@@ -211,17 +211,23 @@ def should_log_trackio_avg(project: str, run_name: str, n: int, metric_key: str,
 
 def resolve_model_dir(model: str) -> str:
     """--model может быть либо repo-id вида 'Qwen/Qwen3-4B-Instruct-2507'
-    (тогда ищем в weights/<repo-id>), либо уже готовым абсолютным/относительным путём.
+    (тогда ищем/скачиваем в weights/<repo-id>), либо уже готовым
+    абсолютным/относительным путём.
 
-    Если под weights/<repo-id> ничего нет — отдаём исходный repo-id как есть,
-    а не несуществующий локальный путь: from_pretrained() сам скачает модель
-    с Hugging Face Hub (в стандартный HF-кэш ~/.cache/huggingface/hub, не
-    сюда), вместо падения с "модель не найдена"."""
+    Если под weights/<repo-id> ничего нет — скачивает модель с Hugging Face
+    Hub прямо туда же (тот же snapshot_download(local_dir=...), что и в
+    download_LLM_weights.py), а не полагается на отдельный HF-кэш
+    from_pretrained() — единое место хранения весов, которое сканирует
+    list_available_models()."""
     if os.path.isabs(model) or os.path.isdir(model):
         return model
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     local_dir = os.path.join(_root, "weights", model)
-    return local_dir if os.path.isdir(local_dir) else model
+    if not os.path.isdir(local_dir):
+        from huggingface_hub import snapshot_download
+        print(f"== {model} не найдена в weights/ — скачиваю с Hugging Face Hub в {local_dir}...")
+        snapshot_download(repo_id=model, local_dir=local_dir)
+    return local_dir
 
 
 def _repo_root() -> str:
