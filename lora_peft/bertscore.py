@@ -124,6 +124,10 @@ def load_model(args, model_dir, device):
                     max_seq_length=4096,
                     dtype=torch.bfloat16,
                     load_in_4bit=False,
+                    # Явно на одну GPU — иначе accelerate при малейшей
+                    # неуверенности в свободной памяти начинает раскидывать
+                    # модули по CPU/диску (см. комментарий ниже про qlora-ветку).
+                    device_map={"": 0},
                 )
                 print(f"== Full FT чекпоинт загружен напрямую из {args.adapter} (Unsloth backend)")
             else:
@@ -141,6 +145,14 @@ def load_model(args, model_dir, device):
                     max_seq_length=4096,  # с запасом под prompt+max_new_tokens при генерации
                     dtype=torch.bfloat16,
                     load_in_4bit=(method == "qlora"),
+                    # Явно на одну GPU, а не device_map="auto": accelerate при
+                    # малейшей неуверенности в свободной памяти начинает
+                    # раскидывать модули по CPU/диску, а bitsandbytes
+                    # отказывается квантовать в смешанном CPU+GPU размещении
+                    # без отдельного llm_int8_enable_fp32_cpu_offload=True —
+                    # падает вместо того, чтобы просто всё поместить на
+                    # единственную видимую GPU.
+                    device_map={"": 0},
                 )
                 if not args.base_only:
                     print(f"== {METHOD_LABELS[method]}-адаптер загружен из {args.adapter} (Unsloth backend)")

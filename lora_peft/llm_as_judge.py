@@ -172,6 +172,11 @@ def load_model(use_lora: bool, model_path: str, adapter_path: str, device: str):
             print(f"== голый PeftModel.from_pretrained() упал ({exc}), "
                   "пробую через Unsloth (похоже на MoE-архитектуру)")
             del model
+            import gc
+            gc.collect()  # без этого torch.cuda.empty_cache() может не увидеть
+                          # часть тензоров первой попытки как освобождённые —
+                          # ссылки на них могут ещё жить в трейсбэке/фреймах
+                          # исключения выше, а сборщик мусора запускается не сразу
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             from unsloth import FastLanguageModel
@@ -181,6 +186,14 @@ def load_model(use_lora: bool, model_path: str, adapter_path: str, device: str):
                 max_seq_length=4096,  # с запасом под prompt+max_new_tokens при генерации
                 dtype=torch_dtype,
                 load_in_4bit=(method == "qlora"),
+                # Явно на одну GPU, а не device_map="auto": accelerate при
+                # малейшей неуверенности в свободной памяти (в том числе из-за
+                # ещё не до конца освобождённой первой попытки выше) начинает
+                # раскидывать модули по CPU/диску, а bitsandbytes отказывается
+                # квантовать в смешанном CPU+GPU размещении без отдельного
+                # llm_int8_enable_fp32_cpu_offload=True — падает вместо того,
+                # чтобы просто всё поместить на единственную видимую GPU.
+                device_map={"": 0},
             )
             FastLanguageModel.for_inference(model)  # быстрый inference-режим
             if tokenizer.pad_token is None:
