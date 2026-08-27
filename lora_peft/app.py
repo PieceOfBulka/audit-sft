@@ -33,6 +33,8 @@ from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                TRACKIO_PROJECT, detect_finetune_method,
                                list_available_adapters, list_available_models,
                                pick_device, resolve_model_dir, silence_max_length_warning)
+from lora_peft.stat_compare import (METRICS as STAT_METRICS, friedman_compare, list_runs,
+                                    paired_compare, per_example_scores)
 
 # Без этого OPENAI_TOKEN/INTERNAL_API_TOKEN из .env не попадают в os.environ
 # этого процесса, и launch_judge() ниже всегда читал бы дефолт "not-needed" —
@@ -513,6 +515,62 @@ def launch_judge(model_id, adapter_path, dataset_choice, base_only, backend_name
     yield from _run_judge(cmd)
 
 
+def refresh_stat_runs():
+    return gr.update(choices=list_runs(TRACKIO_PROJECT))
+
+
+def run_stat_compare(run_names, metric, eval_on):
+    if not run_names or len(run_names) < 2:
+        return "Выбери минимум 2 run'а для сравнения."
+
+    scores = {}
+    lines = []
+    for name in run_names:
+        s = per_example_scores(TRACKIO_PROJECT, name, metric, eval_on)
+        lines.append(f"{name}: n={len(s)}")
+        if not s:
+            lines.append(f"\nУ run'а {name!r} нет построчных оценок '{metric}' "
+                         f"(eval-on={eval_on}) — не с чем сравнивать.")
+            return "\n".join(lines)
+        scores[name] = s
+    lines.append("")
+
+    try:
+        if len(run_names) == 2:
+            a, b = run_names
+            result = paired_compare(scores[a], scores[b])
+            lines.append(f"=== {a} vs {b} ({metric}, {eval_on}, n={result['n']}) ===")
+            lines.append(f"среднее {a}: {result['mean_a']:.3f}")
+            lines.append(f"среднее {b}: {result['mean_b']:.3f}")
+            lines.append(f"разница:    {result['mean_diff']:+.3f}")
+            if result["wilcoxon_p"] is not None:
+                marker = "  ← значимо, p<0.05" if result["wilcoxon_p"] < 0.05 else ""
+                lines.append(f"Wilcoxon signed-rank p = {result['wilcoxon_p']:.4f}{marker}")
+            else:
+                lines.append("Wilcoxon: недостаточно вариации в разностях (все нули?), пропущено")
+            if result["ttest_p"] is not None:
+                marker = "  ← значимо, p<0.05" if result["ttest_p"] < 0.05 else ""
+                lines.append(f"Paired t-test p =         {result['ttest_p']:.4f}{marker}")
+        else:
+            result = friedman_compare(scores)
+            lines.append(f"=== Friedman ({metric}, {eval_on}, n={result['n']}, "
+                         f"{len(run_names)} прогонов) ===")
+            lines.append(f"chi2={result['friedman_stat']:.3f}, p={result['friedman_p']:.4f}")
+            if result["friedman_p"] >= 0.05:
+                lines.append("Значимых различий между прогонами не найдено (p>=0.05) — "
+                             "попарные сравнения не считались")
+            else:
+                lines.append("Значимо (p<0.05) — попарные сравнения (Wilcoxon, поправка Holm-Bonferroni):")
+                for pw in result["pairwise"]:
+                    marker = " *" if pw["p_holm"] < 0.05 else ""
+                    lines.append(f"  {pw['a']} vs {pw['b']}: p_raw={pw['p_raw']:.4f} "
+                                 f"p_holm={pw['p_holm']:.4f}{marker}")
+    except ValueError as exc:
+        lines.append(f"Ошибка: {exc}")
+
+    return "\n".join(lines)
+
+
 def build_eval_tab():
     with gr.Tab("📈 Оценка"):
         gr.Markdown("Оценка модели/адаптера через `bertscore.py` (метрика к эталонным ответам) "
@@ -572,6 +630,33 @@ def build_eval_tab():
                 judge_log,
             )
             judge_stop_btn.click(stop_judge, None, judge_log)
+
+        with gr.Accordion("📊 Статистическое сравнение (LLM-as-judge)", open=False):
+            gr.Markdown(
+                "Сравнивает построчные оценки судьи между run'ами: **Wilcoxon signed-rank** "
+                "(парный, основной результат) + парный t-test для двух run'ов; **Friedman** "
+                "(омнибус) + попарный Wilcoxon с поправкой Holm-Bonferroni для трёх и больше. "
+                "Осмысленно только если run'ы реально шли на одних и тех же примерах в одном "
+                "порядке — тот же домен/сплит, без `--shuffle` (при запуске из этой вкладки "
+                "выше это всегда так)."
+            )
+            with gr.Row():
+                stat_runs_dd = gr.Dropdown(choices=[], multiselect=True,
+                                           label="Run'ы для сравнения (2 и больше)")
+                stat_refresh_btn = gr.Button("🔄")
+            with gr.Row():
+                stat_metric_radio = gr.Radio(choices=list(STAT_METRICS), value="faithfulness",
+                                             label="Метрика")
+                stat_eval_on_radio = gr.Radio(choices=["test", "train"], value="test", label="Сплит")
+            stat_compare_btn = gr.Button("Сравнить", variant="primary")
+            stat_output = gr.Textbox(label="Результат", lines=14, interactive=False)
+
+            stat_refresh_btn.click(refresh_stat_runs, None, stat_runs_dd)
+            stat_compare_btn.click(
+                run_stat_compare,
+                [stat_runs_dd, stat_metric_radio, stat_eval_on_radio],
+                stat_output,
+            )
 
 
 # =====================================================================
