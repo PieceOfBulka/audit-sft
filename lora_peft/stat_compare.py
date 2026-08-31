@@ -58,6 +58,63 @@ def list_runs(project: str) -> list[str]:
     return sorted(names)
 
 
+def latest_avg_metrics(project: str, run_name: str, eval_on: str = "test",
+                       full: bool = False) -> dict[str, float] | None:
+    """Последние залогированные средние judge_*_avg... для одного run'а —
+    faithfulness/completeness/consciousness (какие есть) + n (число примеров),
+    или None, если таких метрик нет вовсе. "Последние" — потому что судью на
+    одном адаптере часто гоняют по нескольку раз, а run.summary/лог метрик
+    просто перезаписывает предыдущее значение (см. should_log_trackio_avg)."""
+    suffix = "" if eval_on == "test" else f"_{eval_on}"
+    suffix += "_full" if full else ""
+    keys = {f"judge_{m}_avg{suffix}": m for m in METRICS}
+    n_key = f"judge_num_samples{suffix}"
+
+    db = _db_path(project)
+    if not db.is_file():
+        return None
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT timestamp, metrics FROM metrics WHERE run_name = ? ORDER BY timestamp DESC",
+               (run_name,))
+    rows = cur.fetchall()
+    conn.close()
+
+    for row in rows:
+        data = json.loads(_as_text(row["metrics"]))
+        found = {m: data[k] for k, m in keys.items() if k in data}
+        if found:
+            if n_key in data:
+                found["n"] = data[n_key]
+            return found
+    return None
+
+
+def top_runs(project: str, eval_on: str = "test", full: bool = False,
+             metric: str | None = None) -> list[dict]:
+    """Топ run'ов по среднему judge-баллу — по одной метрике (metric), или по
+    среднему всех трёх, если metric не задан. Учитывает только run'ы, у
+    которых реально есть залогированное среднее с нужным суффиксом
+    (eval_on/full) — остальные молча пропускаются, не превращаются в 0."""
+    if metric is not None and metric not in METRICS:
+        raise ValueError(f"metric должен быть одним из {METRICS}, получено {metric!r}")
+
+    rows = []
+    for run_name in list_runs(project):
+        avgs = latest_avg_metrics(project, run_name, eval_on=eval_on, full=full)
+        if not avgs:
+            continue
+        present = [avgs[m] for m in METRICS if m in avgs]
+        if not present:
+            continue
+        score = avgs[metric] if metric and metric in avgs else sum(present) / len(present)
+        rows.append({"run_name": run_name, "score": score, **avgs})
+
+    rows.sort(key=lambda r: r["score"], reverse=True)
+    return rows
+
+
 def per_example_scores(project: str, run_name: str, metric: str, eval_on: str = "test") -> list[float]:
     """Построчные (не средние!) оценки судьи для одного run'а, в порядке step
     (= iteration в llm_as_judge.py). metric — один из METRICS."""

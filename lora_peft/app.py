@@ -34,7 +34,7 @@ from lora_peft.common import (DOMAIN_DATASETS, DOMAIN_SYSTEM_PROMPTS,
                                list_available_adapters, list_available_models,
                                pick_device, resolve_model_dir, silence_max_length_warning)
 from lora_peft.stat_compare import (METRICS as STAT_METRICS, friedman_compare, list_runs,
-                                    paired_compare, per_example_scores)
+                                    paired_compare, per_example_scores, top_runs)
 
 # Без этого OPENAI_TOKEN/INTERNAL_API_TOKEN из .env не попадают в os.environ
 # этого процесса, и launch_judge() ниже всегда читал бы дефолт "not-needed" —
@@ -519,6 +519,25 @@ def refresh_stat_runs():
     return gr.update(choices=list_runs(TRACKIO_PROJECT))
 
 
+TOP_METRIC_CHOICES = ["среднее по 3 метрикам"] + list(STAT_METRICS)
+
+
+def run_top_models(metric_choice, eval_on, full, top_n):
+    metric = None if metric_choice == TOP_METRIC_CHOICES[0] else metric_choice
+    rows = top_runs(TRACKIO_PROJECT, eval_on=eval_on, full=bool(full), metric=metric)
+    if not rows:
+        return (f"Не нашёл run'ов с усреднёнными judge-метриками для этих условий "
+               f"(eval_on={eval_on}, full={full}).")
+
+    label = metric or TOP_METRIC_CHOICES[0]
+    lines = [f"=== Топ-{int(top_n)} по '{label}' (eval_on={eval_on}, full={bool(full)}) ===", ""]
+    for i, row in enumerate(rows[:int(top_n)], 1):
+        parts = ", ".join(f"{m}={row[m]:.2f}" for m in STAT_METRICS if m in row)
+        n = f", n={row['n']}" if "n" in row else ""
+        lines.append(f"{i:2d}. {row['score']:.3f}  {row['run_name']}  ({parts}{n})")
+    return "\n".join(lines)
+
+
 def run_stat_compare(run_names, metric, eval_on):
     if not run_names or len(run_names) < 2:
         return "Выбери минимум 2 run'а для сравнения."
@@ -656,6 +675,29 @@ def build_eval_tab():
                 run_stat_compare,
                 [stat_runs_dd, stat_metric_radio, stat_eval_on_radio],
                 stat_output,
+            )
+
+        with gr.Accordion("🏆 Топ моделей (LLM-as-judge)", open=False):
+            gr.Markdown(
+                "Ранжирует run'ы по последнему залогированному среднему judge-баллу "
+                "(`judge_*_avg`) — по одной метрике или по среднему всех трёх. "
+                "**Полновесная** — метрики `_full` (реально пройдены n≥50 примеров, "
+                "см. `FULL_EVAL_THRESHOLD`); без неё берутся обычные (в т.ч. быстрые "
+                "выборочные) проверки."
+            )
+            with gr.Row():
+                top_metric_dd = gr.Dropdown(choices=TOP_METRIC_CHOICES, value=TOP_METRIC_CHOICES[0],
+                                            label="Метрика")
+                top_eval_on_radio = gr.Radio(choices=["test", "train"], value="test", label="Сплит")
+                top_full_checkbox = gr.Checkbox(value=False, label="Только полновесная (_full, n≥50)")
+                top_n_slider = gr.Slider(1, 30, value=10, step=1, label="Сколько показать")
+            top_show_btn = gr.Button("Показать топ", variant="primary")
+            top_output = gr.Textbox(label="Топ", lines=14, interactive=False)
+
+            top_show_btn.click(
+                run_top_models,
+                [top_metric_dd, top_eval_on_radio, top_full_checkbox, top_n_slider],
+                top_output,
             )
 
 
